@@ -2,7 +2,9 @@
 
 // Classical orbital elements (Keplerian)
 // Units are intentionally "visualization friendly" for now.
-// - semiMajorAxis: arbitrary units (e.g., Earth radii or scaled km)
+// Recommended convention for this project:
+// - Distances in Earth radii (Re): Earth sphere is radius 1.0 at the origin.
+//   Example: 400 km altitude LEO -> a ≈ (Re + 400 km) / Re ≈ 1.063
 // - angles are degrees
 struct OrbitalElements
 {

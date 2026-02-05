@@ -6,6 +6,8 @@
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
 #include <QPoint>
+#include <QString>
+#include <QVector3D>
 
 #include <vector>
 
@@ -22,9 +24,19 @@ public:
     explicit OrbitGlWidget(QWidget* parent = nullptr);
     ~OrbitGlWidget() override;
 
-    void setOrbitalElements(const OrbitalElements& elements, int segments = 512);
-    OrbitalElements orbitalElements() const { return elements_; }
-    int orbitSegments() const { return orbitSegments_; }
+    struct SatelliteInfo
+    {
+        int id = 0;
+        QString name;
+        OrbitalElements elements;
+        int segments = 512;
+        QVector3D color{0.2f, 0.8f, 1.0f};
+    };
+
+    int addSatellite(const QString& name, const OrbitalElements& elements, int segments = 512);
+    bool removeSatellite(int id);
+    bool updateSatellite(int id, const OrbitalElements& elements, int segments = 512);
+    std::vector<SatelliteInfo> satellites() const;
 
 protected:
     void initializeGL() override;
@@ -36,17 +48,25 @@ protected:
     void wheelEvent(QWheelEvent* event) override;
 
 private:
+    struct Satellite
+    {
+        SatelliteInfo info;
+        unsigned int vao = 0;
+        unsigned int vbo = 0;
+        std::vector<float> vertices; // xyz triplets
+    };
+
     void rebuildEarthMesh(int stacks, int slices, float radius);
-    void rebuildOrbitVbo();
     QMatrix4x4 buildViewProjection() const;
 
-    void rebuildOrbitGeometry();
+    void rebuildSatelliteVbo(Satellite& sat);
+    void rebuildSatelliteGeometry(Satellite& sat);
+    Satellite* findSatellite(int id);
 
     void rebuildAxisVbo();
+    void rebuildAxisGeometry();
 
     QOpenGLShaderProgram program_;
-    unsigned int vao_ = 0;
-    unsigned int vbo_ = 0;
 
     unsigned int axisVao_ = 0;
     unsigned int axisVbo_ = 0;
@@ -55,8 +75,6 @@ private:
     unsigned int earthVbo_ = 0;
     unsigned int earthEbo_ = 0;
     int earthIndexCount_ = 0;
-
-    std::vector<float> orbitVertices_; // xyz triplets
 
     std::vector<float> axisVertices_; // xyz triplets
 
@@ -69,8 +87,9 @@ private:
     float distance_ = 8.0f;
 
     bool glInitialized_ = false;
-    OrbitalElements elements_;
-    int orbitSegments_ = 512;
+    int nextSatelliteId_ = 1;
+    int paletteIndex_ = 0;
+    std::vector<Satellite> satellites_;
 
     QElapsedTimer timer_;
 };

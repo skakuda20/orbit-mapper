@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 constexpr const char* kVertexShader = R"(
@@ -50,40 +51,113 @@ OrbitGlWidget::OrbitGlWidget(QWidget* parent)
     // Keep the default camera fairly close.
     distance_ = 4.0f;
 
-    // Default demo elements: ~400 km altitude, low-eccentricity LEO.
-    const double earthRadiusKm = 6378.137;
-    const double altitudeKm = 400.0;
-    elements_.semiMajorAxis = (earthRadiusKm + altitudeKm) / earthRadiusKm;
-    elements_.eccentricity = 0.001;
-    elements_.inclinationDeg = 55.0;
-    elements_.raanDeg = 40.0;
-    elements_.argPeriapsisDeg = 30.0;
+    // Satellites are managed from the Qt side panel (MainWindow).
 }
 
-void OrbitGlWidget::setOrbitalElements(const OrbitalElements& elements, int segments)
+int OrbitGlWidget::addSatellite(const QString& name, const OrbitalElements& elements, int segments)
 {
-    elements_ = elements;
-    orbitSegments_ = std::max(8, segments);
+    static const QVector3D palette[] = {
+        {0.20f, 0.80f, 1.00f},
+        {1.00f, 0.75f, 0.20f},
+        {0.85f, 0.35f, 0.85f},
+        {0.35f, 0.85f, 0.45f},
+        {0.95f, 0.35f, 0.30f},
+    };
 
-    if (!glInitialized_) {
-        // Defer GPU upload until initializeGL.
+    Satellite sat;
+    sat.info.id = nextSatelliteId_++;
+    sat.info.name = name;
+    sat.info.elements = elements;
+    sat.info.segments = std::max(8, segments);
+    sat.info.color = palette[paletteIndex_++ % (sizeof(palette) / sizeof(palette[0]))];
+
+    sat.vertices = OrbitSampler::sampleOrbitPolyline(sat.info.elements, sat.info.segments);
+
+    if (glInitialized_) {
+        makeCurrent();
+        glGenVertexArrays(1, &sat.vao);
+        glGenBuffers(1, &sat.vbo);
+        rebuildSatelliteVbo(sat);
+        doneCurrent();
         update();
-        return;
     }
 
-    rebuildOrbitGeometry();
+    satellites_.push_back(std::move(sat));
+    return satellites_.back().info.id;
+}
+
+bool OrbitGlWidget::removeSatellite(int id)
+{
+    for (size_t i = 0; i < satellites_.size(); ++i) {
+        if (satellites_[i].info.id != id) {
+            continue;
+        }
+
+        if (glInitialized_) {
+            makeCurrent();
+            if (satellites_[i].vbo != 0) {
+                glDeleteBuffers(1, &satellites_[i].vbo);
+                satellites_[i].vbo = 0;
+            }
+            if (satellites_[i].vao != 0) {
+                glDeleteVertexArrays(1, &satellites_[i].vao);
+                satellites_[i].vao = 0;
+            }
+            doneCurrent();
+        }
+
+        satellites_.erase(satellites_.begin() + static_cast<long>(i));
+        update();
+        return true;
+    }
+    return false;
+}
+
+bool OrbitGlWidget::updateSatellite(int id, const OrbitalElements& elements, int segments)
+{
+    Satellite* sat = findSatellite(id);
+    if (sat == nullptr) {
+        return false;
+    }
+
+    sat->info.elements = elements;
+    sat->info.segments = std::max(8, segments);
+    sat->vertices = OrbitSampler::sampleOrbitPolyline(sat->info.elements, sat->info.segments);
+
+    if (!glInitialized_) {
+        update();
+        return true;
+    }
+
+    makeCurrent();
+    rebuildSatelliteVbo(*sat);
+    doneCurrent();
+    update();
+    return true;
+}
+
+std::vector<OrbitGlWidget::SatelliteInfo> OrbitGlWidget::satellites() const
+{
+    std::vector<SatelliteInfo> out;
+    out.reserve(satellites_.size());
+    for (const auto& sat : satellites_) {
+        out.push_back(sat.info);
+    }
+    return out;
 }
 
 OrbitGlWidget::~OrbitGlWidget()
 {
     makeCurrent();
-    if (vbo_ != 0) {
-        glDeleteBuffers(1, &vbo_);
-        vbo_ = 0;
-    }
-    if (vao_ != 0) {
-        glDeleteVertexArrays(1, &vao_);
-        vao_ = 0;
+    for (auto& sat : satellites_) {
+        if (sat.vbo != 0) {
+            glDeleteBuffers(1, &sat.vbo);
+            sat.vbo = 0;
+        }
+        if (sat.vao != 0) {
+            glDeleteVertexArrays(1, &sat.vao);
+            sat.vao = 0;
+        }
     }
 
     if (earthEbo_ != 0) {
@@ -97,6 +171,14 @@ OrbitGlWidget::~OrbitGlWidget()
     if (earthVao_ != 0) {
         glDeleteVertexArrays(1, &earthVao_);
         earthVao_ = 0;
+    }
+    if (axisVbo_ != 0) {
+        glDeleteBuffers(1, &axisVbo_);
+        axisVbo_ = 0;
+    }
+    if (axisVao_ != 0) {
+        glDeleteVertexArrays(1, &axisVao_);
+        axisVao_ = 0;
     }
     doneCurrent();
 }
@@ -112,18 +194,25 @@ void OrbitGlWidget::initializeGL()
     program_.addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader);
     program_.link();
 
-    glGenVertexArrays(1, &vao_);
-    glGenBuffers(1, &vbo_);
-
     glGenVertexArrays(1, &earthVao_);
     glGenBuffers(1, &earthVbo_);
     glGenBuffers(1, &earthEbo_);
 
+    glGenVertexArrays(1, &axisVao_);
+    glGenBuffers(1, &axisVbo_);
+
     // Earth mesh at origin.
     rebuildEarthMesh(/*stacks=*/48, /*slices=*/96, /*radius=*/1.0f);
 
-    orbitVertices_ = OrbitSampler::sampleOrbitPolyline(elements_, orbitSegments_);
-    rebuildOrbitVbo();
+    // Create buffers for any satellites added before GL init.
+    for (auto& sat : satellites_) {
+        glGenVertexArrays(1, &sat.vao);
+        glGenBuffers(1, &sat.vbo);
+        sat.vertices = OrbitSampler::sampleOrbitPolyline(sat.info.elements, sat.info.segments);
+        rebuildSatelliteVbo(sat);
+    }
+
+    rebuildAxisGeometry();
 
     glInitialized_ = true;
 }
@@ -138,7 +227,7 @@ void OrbitGlWidget::paintGL()
     glClearColor(0.05f, 0.06f, 0.08f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    if (!program_.isLinked() || vao_ == 0) {
+    if (!program_.isLinked()) {
         return;
     }
 
@@ -155,12 +244,37 @@ void OrbitGlWidget::paintGL()
         glBindVertexArray(0);
     }
 
-    // Draw orbit polyline
-    program_.setUniformValue("uColor", QVector3D(0.2f, 0.8f, 1.0f));
+    // Draw satellite orbits
+    for (const auto& sat : satellites_) {
+        if (sat.vao == 0 || sat.vertices.empty()) {
+            continue;
+        }
+        program_.setUniformValue("uColor", sat.info.color);
+        glBindVertexArray(sat.vao);
+        glDrawArrays(GL_LINE_STRIP, 0, static_cast<int>(sat.vertices.size() / 3));
+        glBindVertexArray(0);
+    }
 
-    glBindVertexArray(vao_);
-    glDrawArrays(GL_LINE_STRIP, 0, static_cast<int>(orbitVertices_.size() / 3));
-    glBindVertexArray(0);
+    // Draw axes
+    if (axisVao_ != 0 && axisVertices_.size() >= 18) {
+        glBindVertexArray(axisVao_);
+
+        const QVector3D axisGrey(0.65f, 0.65f, 0.65f);
+
+        // X axis
+        program_.setUniformValue("uColor", axisGrey);
+        glDrawArrays(GL_LINES, 0, 2);
+
+        // Y axis
+        program_.setUniformValue("uColor", axisGrey);
+        glDrawArrays(GL_LINES, 2, 2);
+
+        // Z axis
+        program_.setUniformValue("uColor", axisGrey);
+        glDrawArrays(GL_LINES, 4, 2);
+
+        glBindVertexArray(0);
+    }
 
     program_.release();
 }
@@ -271,15 +385,15 @@ void OrbitGlWidget::rebuildEarthMesh(int stacks, int slices, float radius)
     glBindVertexArray(0);
 }
 
-void OrbitGlWidget::rebuildOrbitVbo()
+void OrbitGlWidget::rebuildSatelliteVbo(Satellite& sat)
 {
-    glBindVertexArray(vao_);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBindVertexArray(sat.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, sat.vbo);
 
     glBufferData(
         GL_ARRAY_BUFFER,
-        static_cast<long long>(orbitVertices_.size() * sizeof(float)),
-        orbitVertices_.data(),
+        static_cast<long long>(sat.vertices.size() * sizeof(float)),
+        sat.vertices.data(),
         GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
@@ -289,15 +403,57 @@ void OrbitGlWidget::rebuildOrbitVbo()
     glBindVertexArray(0);
 }
 
-void OrbitGlWidget::rebuildOrbitGeometry()
+void OrbitGlWidget::rebuildSatelliteGeometry(Satellite& sat)
 {
-    orbitVertices_ = OrbitSampler::sampleOrbitPolyline(elements_, orbitSegments_);
+    sat.vertices = OrbitSampler::sampleOrbitPolyline(sat.info.elements, sat.info.segments);
+}
 
-    makeCurrent();
-    rebuildOrbitVbo();
-    doneCurrent();
+OrbitGlWidget::Satellite* OrbitGlWidget::findSatellite(int id)
+{
+    for (auto& sat : satellites_) {
+        if (sat.info.id == id) {
+            return &sat;
+        }
+    }
+    return nullptr;
+}
 
-    update();
+void OrbitGlWidget::rebuildAxisVbo()
+{
+    glBindVertexArray(axisVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, axisVbo_);
+
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<long long>(axisVertices_.size() * sizeof(float)),
+        axisVertices_.data(),
+        GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), reinterpret_cast<void*>(0));
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+}
+
+void OrbitGlWidget::rebuildAxisGeometry()
+{
+    axisVertices_ = {
+        // X axis
+        -2.0f, 0.0f, 0.0f,
+        2.0f, 0.0f, 0.0f,
+
+        // Y axis
+        0.0f, -2.0f, 0.0f,
+        0.0f, 2.0f, 0.0f,
+
+        // Z axis
+        0.0f, 0.0f, -2.0f,
+        0.0f, 0.0f, 2.0f,
+    };
+
+    // Caller must have a current GL context.
+    rebuildAxisVbo();
 }
 
 QMatrix4x4 OrbitGlWidget::buildViewProjection() const

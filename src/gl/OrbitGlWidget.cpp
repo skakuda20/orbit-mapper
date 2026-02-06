@@ -1,6 +1,7 @@
 #include "OrbitGlWidget.h"
 
 #include "orbit/OrbitalElements.h"
+#include "orbit/Kepler.h"
 #include "orbit/OrbitSampler.h"
 #include "orbit/Propagator.h"
 #include "orbit/Sgp4Propagator.h"
@@ -65,6 +66,55 @@ static float clampf(float v, float lo, float hi)
 }
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
+
+// Earth constants for simple two-body Kepler propagation.
+// Units: We propagate in "Earth radii" distance units to match rendering.
+// mu(Re^3/s^2) = mu(km^3/s^2) / Re(km)^3
+constexpr double kEarthMuKm3PerS2 = 398600.4418;
+constexpr double kEarthRadiusKm = 6378.137;
+constexpr double kEarthMuRe3PerS2 = kEarthMuKm3PerS2 / (kEarthRadiusKm * kEarthRadiusKm * kEarthRadiusKm);
+
+static double degToRad(double deg)
+{
+    return deg * (kPi / 180.0);
+}
+
+static double wrapTwoPi(double x)
+{
+    const double twoPi = 2.0 * kPi;
+    x = std::fmod(x, twoPi);
+    if (x < 0.0) {
+        x += twoPi;
+    }
+    return x;
+}
+
+static double eccentricAnomalyFromMean(double M, double e)
+{
+    // Newton-Raphson solve: M = E - e sin(E)
+    M = wrapTwoPi(M);
+    double E = (e < 0.8) ? M : kPi;
+    for (int iter = 0; iter < 12; ++iter) {
+        const double f = E - e * std::sin(E) - M;
+        const double fp = 1.0 - e * std::cos(E);
+        const double dE = -f / fp;
+        E += dE;
+        if (std::abs(dE) < 1e-12) {
+            break;
+        }
+    }
+    return E;
+}
+
+static double trueAnomalyFromMean(double M, double e)
+{
+    const double E = eccentricAnomalyFromMean(M, e);
+    const double sinE2 = std::sin(E / 2.0);
+    const double cosE2 = std::cos(E / 2.0);
+    const double num = std::sqrt(1.0 + e) * sinE2;
+    const double den = std::sqrt(1.0 - e) * cosE2;
+    return 2.0 * std::atan2(num, den);
+}
 }
 
 OrbitGlWidget::OrbitGlWidget(QWidget* parent)
@@ -115,6 +165,8 @@ int OrbitGlWidget::addSatellite(const QString& name, const OrbitalElements& elem
     sat.info.elements = elements;
     sat.info.segments = std::max(8, segments);
     sat.info.color = palette[paletteIndex_++ % (sizeof(palette) / sizeof(palette[0]))];
+
+    sat.keplerEpoch = simTime_;
 
     sat.vertices = OrbitSampler::sampleOrbitPolyline(sat.info.elements, sat.info.segments);
 
@@ -167,6 +219,7 @@ bool OrbitGlWidget::updateSatellite(int id, const OrbitalElements& elements, int
 
     sat->info.elements = elements;
     sat->info.segments = std::max(8, segments);
+    sat->keplerEpoch = simTime_;
     sat->vertices = OrbitSampler::sampleOrbitPolyline(sat->info.elements, sat->info.segments);
 
     if (!glInitialized_) {
@@ -257,6 +310,7 @@ bool OrbitGlWidget::setSatelliteTle(int id, const QString& line1, const QString&
         OrbitalElements meanEl;
         if (sgp4->tryGetMeanElements(meanEl)) {
             sat->info.elements = meanEl;
+            sat->keplerEpoch = simTime_;
             sat->vertices = OrbitSampler::sampleOrbitPolyline(sat->info.elements, sat->info.segments);
             if (glInitialized_) {
                 makeCurrent();
@@ -376,17 +430,25 @@ void OrbitGlWidget::paintGL()
         glBindVertexArray(0);
     }
 
-    // Draw propagated satellite markers (SGP4)
+    // Draw satellite markers (Keplerian propagation so the marker lies on the drawn Kepler orbit)
     if (markerVao_ != 0 && markerVbo_ != 0) {
         glPointSize(6.0f);
         glBindVertexArray(markerVao_);
         glBindBuffer(GL_ARRAY_BUFFER, markerVbo_);
         for (const auto& sat : satellites_) {
-            if (!sat.propagator) {
-                continue;
-            }
-            const EciState st = sat.propagator->propagate(simTime_);
-            const float p[3] = {static_cast<float>(st.position[0]), static_cast<float>(st.position[1]), static_cast<float>(st.position[2])};
+            const auto dt = simTime_ - sat.keplerEpoch;
+            const double dtSec = std::chrono::duration_cast<std::chrono::duration<double>>(dt).count();
+
+            const double a = sat.info.elements.semiMajorAxis;
+            const double e = sat.info.elements.eccentricity;
+            const double n = std::sqrt(kEarthMuRe3PerS2 / (a * a * a)); // rad/s
+
+            const double M0 = degToRad(sat.info.elements.meanAnomalyDeg);
+            const double M = M0 + n * dtSec;
+            const double nu = trueAnomalyFromMean(M, e);
+            const auto pos = Kepler::positionEciFromElements(sat.info.elements, nu);
+
+            const float p[3] = {static_cast<float>(pos[0]), static_cast<float>(pos[1]), static_cast<float>(pos[2])};
             glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(p), p);
             program_.setUniformValue("uColor", sat.info.color);
             glDrawArrays(GL_POINTS, 0, 1);

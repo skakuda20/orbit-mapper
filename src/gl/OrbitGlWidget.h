@@ -69,6 +69,9 @@ private:
         std::vector<float> vertices; // xyz triplets
 
         std::unique_ptr<Propagator> propagator;
+
+        // Reference time at which info.elements.meanAnomalyDeg is defined.
+        std::chrono::system_clock::time_point keplerEpoch{};
     };
 
     void rebuildEarthMesh(int stacks, int slices, float radius);

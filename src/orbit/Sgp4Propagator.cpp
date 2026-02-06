@@ -124,6 +124,7 @@ bool Sgp4Propagator::tryGetMeanElements(OrbitalElements& outElements) const
     outElements.inclinationDeg = ctx_->satrec.inclo * kRadToDeg;
     outElements.raanDeg = ctx_->satrec.nodeo * kRadToDeg;
     outElements.argPeriapsisDeg = ctx_->satrec.argpo * kRadToDeg;
+    outElements.meanAnomalyDeg = ctx_->satrec.mo * kRadToDeg;
     return true;
 #endif
 }

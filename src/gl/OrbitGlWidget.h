@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <memory>
 #include <QElapsedTimer>
 #include <QMatrix4x4>
 #include <QOpenGLFunctions_3_3_Core>
@@ -9,12 +11,16 @@
 #include <QString>
 #include <QVector3D>
 
+#include <string>
 #include <vector>
 
 #include "orbit/OrbitalElements.h"
 
 class QMouseEvent;
 class QWheelEvent;
+class QTimer;
+
+class Propagator;
 
 class OrbitGlWidget final : public QOpenGLWidget, protected QOpenGLFunctions_3_3_Core
 {
@@ -38,6 +44,13 @@ public:
     bool updateSatellite(int id, const OrbitalElements& elements, int segments = 512);
     std::vector<SatelliteInfo> satellites() const;
 
+    // Simulation clock controls
+    // timeScale: 0 = paused, 1 = real-time, 10 = 10x faster, etc.
+    void setTimeScale(double timeScale);
+
+    // Assign a TLE to a satellite; if set, a moving marker is rendered using SGP4.
+    bool setSatelliteTle(int id, const QString& line1, const QString& line2);
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
@@ -54,6 +67,8 @@ private:
         unsigned int vao = 0;
         unsigned int vbo = 0;
         std::vector<float> vertices; // xyz triplets
+
+        std::unique_ptr<Propagator> propagator;
     };
 
     void rebuildEarthMesh(int stacks, int slices, float radius);
@@ -78,6 +93,9 @@ private:
     unsigned int earthTex_ = 0;
     QOpenGLShaderProgram earthTexProgram_;
 
+    unsigned int markerVao_ = 0;
+    unsigned int markerVbo_ = 0;
+
     std::vector<float> axisVertices_; // xyz triplets
 
     std::vector<float> earthVertices_; // xyzuv (5 floats per vertex)
@@ -94,4 +112,9 @@ private:
     std::vector<Satellite> satellites_;
 
     QElapsedTimer timer_;
+
+    QTimer* simTimer_ = nullptr;
+    double timeScale_ = 1.0;
+    std::chrono::system_clock::time_point simTime_{};
+    qint64 lastSimTickNs_ = 0;
 };

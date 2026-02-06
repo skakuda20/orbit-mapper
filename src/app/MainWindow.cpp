@@ -57,8 +57,41 @@ MainWindow::MainWindow(QWidget* parent)
 {
     setWindowTitle("Orbit Mapper");
 
-    glWidget_ = new OrbitGlWidget(this);
-    setCentralWidget(glWidget_);
+    auto* central = new QWidget(this);
+    auto* centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+
+    glWidget_ = new OrbitGlWidget(central);
+    centralLayout->addWidget(glWidget_, 1);
+
+    // Bottom simulation controls
+    auto* bottomBar = new QWidget(central);
+    auto* bottomLayout = new QHBoxLayout(bottomBar);
+    bottomLayout->setContentsMargins(8, 6, 8, 6);
+    bottomLayout->setSpacing(8);
+    bottomLayout->addStretch(1);
+
+    auto* pauseBtn = new QPushButton("Pause", bottomBar);
+    auto* x1Btn = new QPushButton("1x", bottomBar);
+    auto* x10Btn = new QPushButton("10x", bottomBar);
+    auto* x100Btn = new QPushButton("100x", bottomBar);
+    auto* x1000Btn = new QPushButton("1000x", bottomBar);
+
+    bottomLayout->addWidget(pauseBtn);
+    bottomLayout->addWidget(x1Btn);
+    bottomLayout->addWidget(x10Btn);
+    bottomLayout->addWidget(x100Btn);
+    bottomLayout->addWidget(x1000Btn);
+
+    connect(pauseBtn, &QPushButton::clicked, this, [this]() { glWidget_->setTimeScale(0.0); });
+    connect(x1Btn, &QPushButton::clicked, this, [this]() { glWidget_->setTimeScale(1.0); });
+    connect(x10Btn, &QPushButton::clicked, this, [this]() { glWidget_->setTimeScale(10.0); });
+    connect(x100Btn, &QPushButton::clicked, this, [this]() { glWidget_->setTimeScale(100.0); });
+    connect(x1000Btn, &QPushButton::clicked, this, [this]() { glWidget_->setTimeScale(1000.0); });
+
+    centralLayout->addWidget(bottomBar, 0);
+    setCentralWidget(central);
 
     // Side panel for managing multiple satellites
     auto* dock = new QDockWidget("Satellites", this);
@@ -146,11 +179,20 @@ MainWindow::MainWindow(QWidget* parent)
         argpSpin->setToolTip("Argument of periapsis ω (deg)");
         argpSpin->setValue(initial.argPeriapsisDeg);
 
+
+        auto* meanAnomSpin = new QDoubleSpinBox(elementsContent);
+        meanAnomSpin->setDecimals(4);
+        meanAnomSpin->setRange(0.0, 360.0);
+        meanAnomSpin->setSingleStep(0.1);
+        meanAnomSpin->setToolTip("Mean anomaly M₀ (deg)");
+        meanAnomSpin->setValue(initial.meanAnomalyDeg);
+
         elementsForm->addRow("a (Re)", aSpin);
         elementsForm->addRow("e", eSpin);
         elementsForm->addRow("i (deg)", iSpin);
         elementsForm->addRow("Ω (deg)", raanSpin);
         elementsForm->addRow("ω (deg)", argpSpin);
+        elementsForm->addRow("M₀ (deg)", meanAnomSpin);
 
         // Nested: Rendering
         QWidget* renderContent = nullptr;
@@ -166,13 +208,15 @@ MainWindow::MainWindow(QWidget* parent)
         segmentsSpin->setValue(segments);
         renderForm->addRow("Segments", segmentsSpin);
 
-        auto pushToGl = [this, id, aSpin, eSpin, iSpin, raanSpin, argpSpin, segmentsSpin]() {
+
+        auto pushToGl = [this, id, aSpin, eSpin, iSpin, raanSpin, argpSpin, meanAnomSpin, segmentsSpin]() {
             OrbitalElements el;
             el.semiMajorAxis = aSpin->value();
             el.eccentricity = eSpin->value();
             el.inclinationDeg = iSpin->value();
             el.raanDeg = raanSpin->value();
             el.argPeriapsisDeg = argpSpin->value();
+            el.meanAnomalyDeg = meanAnomSpin->value();
             glWidget_->updateSatellite(id, el, segmentsSpin->value());
         };
 
@@ -181,6 +225,7 @@ MainWindow::MainWindow(QWidget* parent)
         connect(iSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
         connect(raanSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
         connect(argpSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
+        connect(meanAnomSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
         connect(segmentsSpin, qOverload<int>(&QSpinBox::valueChanged), this, [pushToGl](int) { pushToGl(); });
 
         connect(removeBtn, &QPushButton::clicked, this, [this, id, satGroup]() {
@@ -199,6 +244,13 @@ MainWindow::MainWindow(QWidget* parent)
         const QString name = QString("Satellite %1").arg(satelliteNumber++);
         const int id = glWidget_->addSatellite(name, el, segments);
         addSatelliteEditor(id, name, el, segments);
+
+        // Default TLE (ISS) so SGP4 propagation is visible immediately.
+        // These lines can be replaced later by user-input UI.
+        glWidget_->setSatelliteTle(
+            id,
+            QStringLiteral("1 25544U 98067A   24035.51098992  .00016717  00000-0  30206-3 0  9995"),
+            QStringLiteral("2 25544  51.6424  64.6985 0003317  85.3223  38.9395 15.50156700441045"));
     }
 
     connect(addBtn, &QPushButton::clicked, this, [this, &satelliteNumber, addSatelliteEditor]() mutable {

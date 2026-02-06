@@ -1,11 +1,12 @@
 #pragma once
 
+#include "orbit/OrbitalElements.h"
 #include "orbit/Propagator.h"
 
+#include <memory>
 #include <string>
 
 // Wrapper around an SGP4 implementation.
-// For now this builds as a stub unless you wire in an SGP4 library in CMake.
 class Sgp4Propagator final : public Propagator
 {
 public:
@@ -14,7 +15,11 @@ public:
 
     EciState propagate(std::chrono::system_clock::time_point t) const override;
 
+    // Returns the TLE mean elements (best-effort) in the app's rendering convention.
+    // Useful for drawing an orbit polyline that matches the SGP4-propagated marker.
+    bool tryGetMeanElements(OrbitalElements& outElements) const;
+
 private:
-    std::string line1_;
-    std::string line2_;
+    struct Context;
+    std::shared_ptr<const Context> ctx_;
 };

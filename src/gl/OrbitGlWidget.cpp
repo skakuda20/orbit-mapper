@@ -2,8 +2,11 @@
 
 #include "orbit/OrbitalElements.h"
 #include "orbit/OrbitSampler.h"
+#include "orbit/Propagator.h"
+#include "orbit/Sgp4Propagator.h"
 
 #include <QMouseEvent>
+#include <QTimer>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -69,6 +72,25 @@ OrbitGlWidget::OrbitGlWidget(QWidget* parent)
 {
     setFocusPolicy(Qt::StrongFocus);
     timer_.start();
+    simTime_ = std::chrono::system_clock::now();
+    lastSimTickNs_ = timer_.nsecsElapsed();
+
+    // Drive animation/simulation.
+    simTimer_ = new QTimer(this);
+    simTimer_->setInterval(16);
+    connect(simTimer_, &QTimer::timeout, this, [this]() {
+        const qint64 nowNs = timer_.nsecsElapsed();
+        const double dt = static_cast<double>(nowNs - lastSimTickNs_) / 1e9;
+        lastSimTickNs_ = nowNs;
+
+        if (timeScale_ > 0.0 && dt > 0.0) {
+            const auto delta = std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                std::chrono::duration<double>(dt * timeScale_));
+            simTime_ += delta;
+        }
+        update();
+    });
+    simTimer_->start();
 
     // In "Earth radii" units, a typical LEO orbit is ~1.06.
     // Keep the default camera fairly close.
@@ -203,7 +225,49 @@ OrbitGlWidget::~OrbitGlWidget()
         glDeleteVertexArrays(1, &axisVao_);
         axisVao_ = 0;
     }
+
+    if (markerVbo_ != 0) {
+        glDeleteBuffers(1, &markerVbo_);
+        markerVbo_ = 0;
+    }
+    if (markerVao_ != 0) {
+        glDeleteVertexArrays(1, &markerVao_);
+        markerVao_ = 0;
+    }
     doneCurrent();
+}
+
+void OrbitGlWidget::setTimeScale(double timeScale)
+{
+    timeScale_ = std::max(0.0, timeScale);
+}
+
+bool OrbitGlWidget::setSatelliteTle(int id, const QString& line1, const QString& line2)
+{
+    auto* sat = findSatellite(id);
+    if (!sat) {
+        return false;
+    }
+
+    sat->propagator = std::make_unique<Sgp4Propagator>(line1.toStdString(), line2.toStdString());
+
+    // If possible, sync the visualized orbit to the TLE mean elements so the
+    // orbit polyline matches the propagated marker.
+    if (auto* sgp4 = dynamic_cast<Sgp4Propagator*>(sat->propagator.get())) {
+        OrbitalElements meanEl;
+        if (sgp4->tryGetMeanElements(meanEl)) {
+            sat->info.elements = meanEl;
+            sat->vertices = OrbitSampler::sampleOrbitPolyline(sat->info.elements, sat->info.segments);
+            if (glInitialized_) {
+                makeCurrent();
+                rebuildSatelliteVbo(*sat);
+                doneCurrent();
+            }
+        }
+    }
+
+    update();
+    return true;
 }
 
 void OrbitGlWidget::initializeGL()
@@ -227,6 +291,9 @@ void OrbitGlWidget::initializeGL()
 
     glGenVertexArrays(1, &axisVao_);
     glGenBuffers(1, &axisVbo_);
+
+    glGenVertexArrays(1, &markerVao_);
+    glGenBuffers(1, &markerVbo_);
 
     // Earth mesh at origin.
     rebuildEarthMesh(/*stacks=*/48, /*slices=*/96, /*radius=*/1.0f);
@@ -253,6 +320,15 @@ void OrbitGlWidget::initializeGL()
     }
 
     rebuildAxisGeometry();
+
+    // Marker VAO/VBO: single vec3 position, updated per draw.
+    glBindVertexArray(markerVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, markerVbo_);
+    glBufferData(GL_ARRAY_BUFFER, 3 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), reinterpret_cast<void*>(0));
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
 
     glInitialized_ = true;
 }
@@ -297,6 +373,25 @@ void OrbitGlWidget::paintGL()
         program_.setUniformValue("uColor", sat.info.color);
         glBindVertexArray(sat.vao);
         glDrawArrays(GL_LINE_STRIP, 0, static_cast<int>(sat.vertices.size() / 3));
+        glBindVertexArray(0);
+    }
+
+    // Draw propagated satellite markers (SGP4)
+    if (markerVao_ != 0 && markerVbo_ != 0) {
+        glPointSize(6.0f);
+        glBindVertexArray(markerVao_);
+        glBindBuffer(GL_ARRAY_BUFFER, markerVbo_);
+        for (const auto& sat : satellites_) {
+            if (!sat.propagator) {
+                continue;
+            }
+            const EciState st = sat.propagator->propagate(simTime_);
+            const float p[3] = {static_cast<float>(st.position[0]), static_cast<float>(st.position[1]), static_cast<float>(st.position[2])};
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(p), p);
+            program_.setUniformValue("uColor", sat.info.color);
+            glDrawArrays(GL_POINTS, 0, 1);
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
     }
 

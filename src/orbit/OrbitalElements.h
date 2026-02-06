@@ -13,4 +13,5 @@ struct OrbitalElements
     double inclinationDeg = 0.0;    // i
     double raanDeg = 0.0;           // Ω
     double argPeriapsisDeg = 0.0;   // ω
+    double meanAnomalyDeg = 0.0;    // M₀ (mean anomaly at epoch, degrees)
 };

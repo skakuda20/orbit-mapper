@@ -51,35 +51,13 @@ target_link_libraries(orbit_mapper PRIVATE
 )
 
 if (ORBIT_MAPPER_ENABLE_SGP4)
-  include(FetchContent)
-
-  # NOTE: This is a placeholder dependency hook.
-  # Pick a specific SGP4 implementation and pin it to a commit/tag.
-  # Example candidates (you choose):
-  # - https://github.com/dnwrnr/sgp4 (C++)
-  # - https://github.com/aholinch/sgp4 (C)
-  #
-  # Once selected, update:
-  # - ORBIT_MAPPER_SGP4_REPO
-  # - ORBIT_MAPPER_SGP4_TAG
-  # - link target name
-  set(ORBIT_MAPPER_SGP4_REPO "" CACHE STRING "SGP4 repo URL")
-  set(ORBIT_MAPPER_SGP4_TAG "" CACHE STRING "SGP4 tag/commit")
-
-  if (ORBIT_MAPPER_SGP4_REPO STREQUAL "")
-    message(STATUS "SGP4 enabled, but ORBIT_MAPPER_SGP4_REPO is empty; building with stub propagator")
-    target_compile_definitions(orbit_mapper PRIVATE ORBIT_MAPPER_SGP4_STUB=1)
-  else()
-    FetchContent_Declare(sgp4
-      GIT_REPOSITORY ${ORBIT_MAPPER_SGP4_REPO}
-      GIT_TAG ${ORBIT_MAPPER_SGP4_TAG}
-    )
-    FetchContent_MakeAvailable(sgp4)
-
-    # TODO: Update link library name for the chosen implementation.
-    # target_link_libraries(orbit_mapper PRIVATE sgp4)
-    target_compile_definitions(orbit_mapper PRIVATE ORBIT_MAPPER_SGP4_STUB=1)
-  endif()
+  # Use the vendored SGP4 implementation.
+  # It defines a static library target named "SGP4".
+  set(SGP4_WITH_TESTS OFF CACHE BOOL "Compile SGP4 test executables" FORCE)
+  add_subdirectory(external/sgp4 EXCLUDE_FROM_ALL)
+  target_link_libraries(orbit_mapper PRIVATE SGP4)
+  target_include_directories(orbit_mapper PRIVATE external/sgp4/SGP4/SGP4)
+  target_compile_definitions(orbit_mapper PRIVATE ORBIT_MAPPER_SGP4_STUB=0)
 else()
   target_compile_definitions(orbit_mapper PRIVATE ORBIT_MAPPER_SGP4_STUB=1)
 endif()

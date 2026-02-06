@@ -212,25 +212,19 @@ bool OrbitGlWidget::removeSatellite(int id)
 
 bool OrbitGlWidget::updateSatellite(int id, const OrbitalElements& elements, int segments)
 {
-    Satellite* sat = findSatellite(id);
-    if (sat == nullptr) {
+    auto it = std::find_if(satellites_.begin(), satellites_.end(),
+        [id](const Satellite& s) { return s.info.id == id; });
+    if (it == satellites_.end())
         return false;
+
+    // Only reset keplerEpoch if mean anomaly changed
+    if (it->info.elements.meanAnomalyDeg != elements.meanAnomalyDeg) {
+        it->keplerEpoch = simTime_;
     }
-
-    sat->info.elements = elements;
-    sat->info.segments = std::max(8, segments);
-    sat->keplerEpoch = simTime_;
-    sat->vertices = OrbitSampler::sampleOrbitPolyline(sat->info.elements, sat->info.segments);
-
-    if (!glInitialized_) {
-        update();
-        return true;
-    }
-
-    makeCurrent();
-    rebuildSatelliteVbo(*sat);
-    doneCurrent();
-    update();
+    it->info.elements = elements;
+    it->info.segments = segments;
+    rebuildSatelliteGeometry(*it);   // <-- Add this line
+    rebuildSatelliteVbo(*it);
     return true;
 }
 

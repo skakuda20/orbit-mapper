@@ -75,10 +75,12 @@ private:
     unsigned int earthVbo_ = 0;
     unsigned int earthEbo_ = 0;
     int earthIndexCount_ = 0;
+    unsigned int earthTex_ = 0;
+    QOpenGLShaderProgram earthTexProgram_;
 
     std::vector<float> axisVertices_; // xyz triplets
 
-    std::vector<float> earthVertices_; // xyz triplets
+    std::vector<float> earthVertices_; // xyzuv (5 floats per vertex)
     std::vector<unsigned int> earthIndices_;
 
     QPoint lastMousePos_;

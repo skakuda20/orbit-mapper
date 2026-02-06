@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <QImage>
 #include <utility>
 
 namespace {
@@ -32,6 +33,28 @@ void main() {
   FragColor = vec4(uColor, 1.0);
 }
 )";
+
+constexpr const char* kEarthTexVertexShader = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUV;
+uniform mat4 uMvp;
+out vec2 vUV;
+void main() {
+        vUV = aUV;
+        gl_Position = uMvp * vec4(aPos, 1.0);
+}
+ )";
+
+constexpr const char* kEarthTexFragmentShader = R"(
+#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTexture;
+void main() {
+        FragColor = texture(uTexture, vUV);
+}
+ )";
 
 static float clampf(float v, float lo, float hi)
 {
@@ -194,6 +217,10 @@ void OrbitGlWidget::initializeGL()
     program_.addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader);
     program_.link();
 
+    earthTexProgram_.addShaderFromSourceCode(QOpenGLShader::Vertex, kEarthTexVertexShader);
+    earthTexProgram_.addShaderFromSourceCode(QOpenGLShader::Fragment, kEarthTexFragmentShader);
+    earthTexProgram_.link();
+
     glGenVertexArrays(1, &earthVao_);
     glGenBuffers(1, &earthVbo_);
     glGenBuffers(1, &earthEbo_);
@@ -203,6 +230,19 @@ void OrbitGlWidget::initializeGL()
 
     // Earth mesh at origin.
     rebuildEarthMesh(/*stacks=*/48, /*slices=*/96, /*radius=*/1.0f);
+
+    // Load Earth texture
+    QImage img(QStringLiteral("../assets/2k_earth_nightmap.jpg"));
+    if (!img.isNull()) {
+        img = img.convertToFormat(QImage::Format_RGBA8888);
+        glGenTextures(1, &earthTex_);
+        glBindTexture(GL_TEXTURE_2D, earthTex_);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, img.width(), img.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 
     // Create buffers for any satellites added before GL init.
     for (auto& sat : satellites_) {
@@ -233,18 +273,23 @@ void OrbitGlWidget::paintGL()
 
     QMatrix4x4 mvp = buildViewProjection();
 
-    program_.bind();
-    program_.setUniformValue("uMvp", mvp);
-
-    // Draw Earth sphere
-    if (earthVao_ != 0 && earthIndexCount_ > 0) {
-        program_.setUniformValue("uColor", QVector3D(0.12f, 0.32f, 0.62f));
+    // Draw textured Earth sphere
+    if (earthVao_ != 0 && earthIndexCount_ > 0 && earthTex_ != 0 && earthTexProgram_.isLinked()) {
+        earthTexProgram_.bind();
+        earthTexProgram_.setUniformValue("uMvp", mvp);
+        earthTexProgram_.setUniformValue("uTexture", 0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, earthTex_);
         glBindVertexArray(earthVao_);
         glDrawElements(GL_TRIANGLES, earthIndexCount_, GL_UNSIGNED_INT, reinterpret_cast<void*>(0));
         glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        earthTexProgram_.release();
     }
 
     // Draw satellite orbits
+    program_.bind();
+    program_.setUniformValue("uMvp", mvp);
     for (const auto& sat : satellites_) {
         if (sat.vao == 0 || sat.vertices.empty()) {
             continue;
@@ -256,6 +301,7 @@ void OrbitGlWidget::paintGL()
     }
 
     // Draw axes
+    program_.setUniformValue("uMvp", mvp);
     if (axisVao_ != 0 && axisVertices_.size() >= 18) {
         glBindVertexArray(axisVao_);
 
@@ -314,8 +360,8 @@ void OrbitGlWidget::rebuildEarthMesh(int stacks, int slices, float radius)
     earthVertices_.clear();
     earthIndices_.clear();
 
-    // Vertices
-    earthVertices_.reserve(static_cast<size_t>((stacks + 1) * (slices + 1) * 3));
+    // Vertices (xyzuv)
+    earthVertices_.reserve(static_cast<size_t>((stacks + 1) * (slices + 1) * 5));
     for (int i = 0; i <= stacks; ++i) {
         const double v = static_cast<double>(i) / static_cast<double>(stacks);
         const double phi = v * kPi; // 0..pi
@@ -333,10 +379,14 @@ void OrbitGlWidget::rebuildEarthMesh(int stacks, int slices, float radius)
             const float x = radius * static_cast<float>(sinPhi * cosTheta);
             const float y = radius * static_cast<float>(cosPhi);
             const float z = radius * static_cast<float>(sinPhi * sinTheta);
+            const float texU = static_cast<float>(u);
+            const float texV = static_cast<float>(v);
 
             earthVertices_.push_back(x);
             earthVertices_.push_back(y);
             earthVertices_.push_back(z);
+            earthVertices_.push_back(texU);
+            earthVertices_.push_back(texV);
         }
     }
 
@@ -380,7 +430,9 @@ void OrbitGlWidget::rebuildEarthMesh(int stacks, int slices, float radius)
         GL_STATIC_DRAW);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), reinterpret_cast<void*>(0));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), reinterpret_cast<void*>(3 * sizeof(float)));
 
     glBindVertexArray(0);
 }

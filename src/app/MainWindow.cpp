@@ -5,6 +5,7 @@
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QSlider>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QPushButton>
@@ -144,12 +145,24 @@ MainWindow::MainWindow(QWidget* parent)
         auto* elementsForm = new QFormLayout(elementsContent);
         elementsForm->setContentsMargins(0, 0, 0, 0);
 
+        // Add sliders and spinboxes for each element
         auto* aSpin = new QDoubleSpinBox(elementsContent);
         aSpin->setDecimals(6);
         aSpin->setRange(0.1, 1000.0);
         aSpin->setSingleStep(0.001);
         aSpin->setToolTip("Semi-major axis a (Earth radii)");
         aSpin->setValue(initial.semiMajorAxis);
+        auto* aSlider = new QSlider(Qt::Horizontal, elementsContent);
+        aSlider->setRange(0, 10000); // 0.0 to 10.0, step 0.001 * 1000
+        aSlider->setValue(static_cast<int>(initial.semiMajorAxis * 1000));
+        QObject::connect(aSlider, &QSlider::valueChanged, aSpin, [aSpin](int v){ aSpin->setValue(v/1000.0); });
+        QObject::connect(aSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), aSlider, [aSlider](double v){ aSlider->setValue(static_cast<int>(v*1000)); });
+        auto* aWidget = new QWidget(elementsContent);
+        auto* aLayout = new QVBoxLayout(aWidget);
+        aLayout->setContentsMargins(0,0,0,0);
+        aLayout->addWidget(aSpin);
+        aLayout->addWidget(aSlider);
+        elementsForm->addRow("a (Re)", aWidget);
 
         auto* eSpin = new QDoubleSpinBox(elementsContent);
         eSpin->setDecimals(8);
@@ -157,6 +170,17 @@ MainWindow::MainWindow(QWidget* parent)
         eSpin->setSingleStep(0.0001);
         eSpin->setToolTip("Eccentricity e");
         eSpin->setValue(initial.eccentricity);
+        auto* eSlider = new QSlider(Qt::Horizontal, elementsContent);
+        eSlider->setRange(0, 99999999); // 0.0 to 0.99999999, step 0.00000001 * 1e8
+        eSlider->setValue(static_cast<int>(initial.eccentricity * 1e8));
+        QObject::connect(eSlider, &QSlider::valueChanged, eSpin, [eSpin](int v){ eSpin->setValue(v/1e8); });
+        QObject::connect(eSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), eSlider, [eSlider](double v){ eSlider->setValue(static_cast<int>(v*1e8)); });
+        auto* eWidget = new QWidget(elementsContent);
+        auto* eLayout = new QVBoxLayout(eWidget);
+        eLayout->setContentsMargins(0,0,0,0);
+        eLayout->addWidget(eSpin);
+        eLayout->addWidget(eSlider);
+        elementsForm->addRow("e", eWidget);
 
         auto* iSpin = new QDoubleSpinBox(elementsContent);
         iSpin->setDecimals(4);
@@ -164,6 +188,17 @@ MainWindow::MainWindow(QWidget* parent)
         iSpin->setSingleStep(0.1);
         iSpin->setToolTip("Inclination i (deg)");
         iSpin->setValue(initial.inclinationDeg);
+        auto* iSlider = new QSlider(Qt::Horizontal, elementsContent);
+        iSlider->setRange(0, 18000); // 0.0 to 180.0, step 0.01
+        iSlider->setValue(static_cast<int>(initial.inclinationDeg * 100));
+        QObject::connect(iSlider, &QSlider::valueChanged, iSpin, [iSpin](int v){ iSpin->setValue(v/100.0); });
+        QObject::connect(iSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), iSlider, [iSlider](double v){ iSlider->setValue(static_cast<int>(v*100)); });
+        auto* iWidget = new QWidget(elementsContent);
+        auto* iLayout = new QVBoxLayout(iWidget);
+        iLayout->setContentsMargins(0,0,0,0);
+        iLayout->addWidget(iSpin);
+        iLayout->addWidget(iSlider);
+        elementsForm->addRow("i (deg)", iWidget);
 
         auto* raanSpin = new QDoubleSpinBox(elementsContent);
         raanSpin->setDecimals(4);
@@ -171,6 +206,17 @@ MainWindow::MainWindow(QWidget* parent)
         raanSpin->setSingleStep(0.1);
         raanSpin->setToolTip("RAAN Ω (deg)");
         raanSpin->setValue(initial.raanDeg);
+        auto* raanSlider = new QSlider(Qt::Horizontal, elementsContent);
+        raanSlider->setRange(0, 36000); // 0.0 to 360.0, step 0.01
+        raanSlider->setValue(static_cast<int>(initial.raanDeg * 100));
+        QObject::connect(raanSlider, &QSlider::valueChanged, raanSpin, [raanSpin](int v){ raanSpin->setValue(v/100.0); });
+        QObject::connect(raanSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), raanSlider, [raanSlider](double v){ raanSlider->setValue(static_cast<int>(v*100)); });
+        auto* raanWidget = new QWidget(elementsContent);
+        auto* raanLayout = new QVBoxLayout(raanWidget);
+        raanLayout->setContentsMargins(0,0,0,0);
+        raanLayout->addWidget(raanSpin);
+        raanLayout->addWidget(raanSlider);
+        elementsForm->addRow("Ω (deg)", raanWidget);
 
         auto* argpSpin = new QDoubleSpinBox(elementsContent);
         argpSpin->setDecimals(4);
@@ -178,7 +224,17 @@ MainWindow::MainWindow(QWidget* parent)
         argpSpin->setSingleStep(0.1);
         argpSpin->setToolTip("Argument of periapsis ω (deg)");
         argpSpin->setValue(initial.argPeriapsisDeg);
-
+        auto* argpSlider = new QSlider(Qt::Horizontal, elementsContent);
+        argpSlider->setRange(0, 36000); // 0.0 to 360.0, step 0.01
+        argpSlider->setValue(static_cast<int>(initial.argPeriapsisDeg * 100));
+        QObject::connect(argpSlider, &QSlider::valueChanged, argpSpin, [argpSpin](int v){ argpSpin->setValue(v/100.0); });
+        QObject::connect(argpSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), argpSlider, [argpSlider](double v){ argpSlider->setValue(static_cast<int>(v*100)); });
+        auto* argpWidget = new QWidget(elementsContent);
+        auto* argpLayout = new QVBoxLayout(argpWidget);
+        argpLayout->setContentsMargins(0,0,0,0);
+        argpLayout->addWidget(argpSpin);
+        argpLayout->addWidget(argpSlider);
+        elementsForm->addRow("ω (deg)", argpWidget);
 
         auto* meanAnomSpin = new QDoubleSpinBox(elementsContent);
         meanAnomSpin->setDecimals(4);
@@ -186,13 +242,17 @@ MainWindow::MainWindow(QWidget* parent)
         meanAnomSpin->setSingleStep(0.1);
         meanAnomSpin->setToolTip("Mean anomaly M₀ (deg)");
         meanAnomSpin->setValue(initial.meanAnomalyDeg);
-
-        elementsForm->addRow("a (Re)", aSpin);
-        elementsForm->addRow("e", eSpin);
-        elementsForm->addRow("i (deg)", iSpin);
-        elementsForm->addRow("Ω (deg)", raanSpin);
-        elementsForm->addRow("ω (deg)", argpSpin);
-        elementsForm->addRow("M₀ (deg)", meanAnomSpin);
+        auto* meanAnomSlider = new QSlider(Qt::Horizontal, elementsContent);
+        meanAnomSlider->setRange(0, 36000); // 0.0 to 360.0, step 0.01
+        meanAnomSlider->setValue(static_cast<int>(initial.meanAnomalyDeg * 100));
+        QObject::connect(meanAnomSlider, &QSlider::valueChanged, meanAnomSpin, [meanAnomSpin](int v){ meanAnomSpin->setValue(v/100.0); });
+        QObject::connect(meanAnomSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), meanAnomSlider, [meanAnomSlider](double v){ meanAnomSlider->setValue(static_cast<int>(v*100)); });
+        auto* meanAnomWidget = new QWidget(elementsContent);
+        auto* meanAnomLayout = new QVBoxLayout(meanAnomWidget);
+        meanAnomLayout->setContentsMargins(0,0,0,0);
+        meanAnomLayout->addWidget(meanAnomSpin);
+        meanAnomLayout->addWidget(meanAnomSlider);
+        elementsForm->addRow("M₀ (deg)", meanAnomWidget);
 
         // Nested: Rendering
         QWidget* renderContent = nullptr;

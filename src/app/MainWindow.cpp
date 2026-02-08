@@ -120,7 +120,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     int satelliteNumber = 1;
 
-    auto addSatelliteEditor = [this, listHost, listLayout](int id, const QString& name, const OrbitalElements& initial, int segments) {
+    auto addSatelliteEditor = [this, listHost, listLayout](int id, const QString& name, const OrbitalElements& initial) {
         QWidget* satContent = nullptr;
         auto* satGroup = makeCollapsibleGroup(name, listHost, &satContent);
 
@@ -255,22 +255,7 @@ MainWindow::MainWindow(QWidget* parent)
         meanAnomLayout->addWidget(meanAnomSlider);
         elementsForm->addRow("M₀ (deg)", meanAnomWidget);
 
-        // Nested: Rendering
-        QWidget* renderContent = nullptr;
-        auto* renderGroup = makeCollapsibleGroup("Rendering", satContent, &renderContent);
-        satLayout->addWidget(renderGroup);
-
-        auto* renderForm = new QFormLayout(renderContent);
-        renderForm->setContentsMargins(0, 0, 0, 0);
-        auto* segmentsSpin = new QSpinBox(renderContent);
-        segmentsSpin->setRange(32, 4096);
-        segmentsSpin->setSingleStep(32);
-        segmentsSpin->setToolTip("Polyline segments used for orbit rendering");
-        segmentsSpin->setValue(segments);
-        renderForm->addRow("Segments", segmentsSpin);
-
-
-        auto pushToGl = [this, id, aSpin, eSpin, iSpin, raanSpin, argpSpin, meanAnomSpin, segmentsSpin]() {
+        auto pushToGl = [this, id, aSpin, eSpin, iSpin, raanSpin, argpSpin, meanAnomSpin]() {
             OrbitalElements el;
             // Convert kilometers to Earth radii (Earth radius = 6378.137 km)
             el.semiMajorAxis = aSpin->value() / 6378.137;
@@ -279,7 +264,7 @@ MainWindow::MainWindow(QWidget* parent)
             el.raanDeg = raanSpin->value();
             el.argPeriapsisDeg = argpSpin->value();
             el.meanAnomalyDeg = meanAnomSpin->value();
-            glWidget_->updateSatellite(id, el, segmentsSpin->value());
+            glWidget_->updateSatellite(id, el, 512); // Use fixed 512 segments
         };
 
         connect(aSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
@@ -288,7 +273,6 @@ MainWindow::MainWindow(QWidget* parent)
         connect(raanSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
         connect(argpSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
         connect(meanAnomSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [pushToGl](double) { pushToGl(); });
-        connect(segmentsSpin, qOverload<int>(&QSpinBox::valueChanged), this, [pushToGl](int) { pushToGl(); });
 
         connect(removeBtn, &QPushButton::clicked, this, [this, id, satGroup]() {
             glWidget_->removeSatellite(id);
@@ -305,7 +289,7 @@ MainWindow::MainWindow(QWidget* parent)
         const int segments = 512;
         const QString name = QString("Satellite %1").arg(satelliteNumber++);
         const int id = glWidget_->addSatellite(name, el, segments);
-        addSatelliteEditor(id, name, el, segments);
+        addSatelliteEditor(id, name, el);
 
         // Default TLE (ISS) so SGP4 propagation is visible immediately.
         // These lines can be replaced later by user-input UI.
@@ -320,7 +304,7 @@ MainWindow::MainWindow(QWidget* parent)
         const int segments = 512;
         const QString name = QString("Satellite %1").arg(satelliteNumber++);
         const int id = glWidget_->addSatellite(name, el, segments);
-        addSatelliteEditor(id, name, el, segments);
+        addSatelliteEditor(id, name, el);
     });
 
     dock->setWidget(panel);

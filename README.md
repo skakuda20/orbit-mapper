@@ -1,89 +1,41 @@
 # orbit-mapper
 
-Qt + OpenGL desktop app scaffold for visualizing satellite orbits.
+**orbit-mapper** is a Qt + OpenGL desktop app for visualizing satellite orbits.
 
-Currently included:
-- Qt6 `QOpenGLWidget` renderer with a demo orbit polyline
-- Classical orbital elements (Keplerian) → sampled 3D polyline
-- SGP4 integration hook (CMake option + wrapper) with a stub implementation until you select a specific SGP4 library
+## Quick Start (Linux)
 
-## Build (Linux)
+1. **Run the setup script:**
 
-Prereqs (Ubuntu/Debian names may vary):
-- CMake >= 3.22
+	 ```bash
+	 ./scripts/setup.sh
+	 ```
+	 - This installs all required dependencies (Qt, CMake, build tools) and builds the app.
+	 - By default, it uses Qt5. To use Qt6, run:
+		 ```bash
+		 QT_VERSION=6 ./scripts/setup.sh
+		 ```
 
-- A C++20 compiler (GCC/Clang)
-- Qt development packages (Qt6 preferred)
+2. **Run the app:**
 
-If CMake can’t find Qt, either install the dev packages or point CMake at your Qt SDK via `CMAKE_PREFIX_PATH` (or `Qt6_DIR`).
+	 ```bash
+	 ./build/orbit_mapper
+	 ```
 
-Configure + build:
+## Using the App
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
+- **Rotate camera:** Left-drag with mouse
+- **Zoom:** Mouse wheel
+- **Add satellites:** Use the "Add Satellite" button in the side panel
+- **Edit orbits:** Adjust orbital elements with sliders/spinboxes
+- **Simulation speed:** Use the bottom bar to pause or change time scale
 
-If you want to build with Qt5 instead:
+## Notes
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DORBIT_MAPPER_QT_VERSION=5
-cmake --build build -j
-```
+- If you use Snap-installed VS Code and see a `libpthread.so.0` error, try running with:
+	```bash
+	env -u LD_LIBRARY_PATH -u LD_PRELOAD -u SNAP -u SNAP_NAME -u SNAP_REVISION -u SNAP_VERSION ./build/orbit_mapper
+	```
 
-If you installed Qt from the official SDK, you may need:
+## SGP4 Integration
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-	-DCMAKE_PREFIX_PATH=/path/to/Qt/6.x.x/gcc_64
-```
-
-Run:
-
-```bash
-./build/orbit_mapper
-```
-
-> Note (Snap VS Code): If you run from the integrated terminal of a Snap-installed VS Code, you may see:
-> `symbol lookup error ... libpthread.so.0: undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE`
-> This is caused by Snap runtime libraries leaking into `LD_LIBRARY_PATH`.
-> Fix by using a non-snap VS Code install (recommended) or run with a clean environment:
->
-> ```bash
-> env -u LD_LIBRARY_PATH -u LD_PRELOAD -u SNAP -u SNAP_NAME -u SNAP_REVISION -u SNAP_VERSION ./build/orbit_mapper
-> ```
-
-Controls:
-- Left-drag: rotate camera
-- Mouse wheel: zoom
-
-## SGP4 integration
-
-The project includes a wrapper class:
-- [src/orbit/Sgp4Propagator.h](src/orbit/Sgp4Propagator.h)
-
-And a CMake hook:
-- [CMakeLists.txt](CMakeLists.txt)
-
-By default it builds a stub propagator because no SGP4 repo is selected.
-
-To wire a real SGP4 implementation in, set these cache variables and update the link target name in `CMakeLists.txt`:
-
-```bash
-cmake -S . -B build \
-	-DORBIT_MAPPER_ENABLE_SGP4=ON \
-	-DORBIT_MAPPER_SGP4_REPO=https://github.com/<owner>/<repo>.git \
-	-DORBIT_MAPPER_SGP4_TAG=<tag-or-commit>
-```
-
-Then replace the stub section in [src/orbit/Sgp4Propagator.cpp](src/orbit/Sgp4Propagator.cpp) with calls into the chosen library.
-
-## Project layout
-
-- [src/app](src/app): Qt main window
-- [src/gl](src/gl): OpenGL widget + drawing
-- [src/orbit](src/orbit): Orbital element math + propagation interfaces
-
-
--------
-Add script to install necessary dependencies like Qt5
+The app includes a stub SGP4 propagator. To use a real SGP4 library, see comments in `src/orbit/Sgp4Propagator.cpp` and the CMake options in `CMakeLists.txt`.

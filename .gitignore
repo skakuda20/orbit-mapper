@@ -1,12 +1,9 @@
-# Build
 build/
 cmake-build-*/
 
-# Qt / IDE
 *.user
 .vscode/
 
-# OS
 .DS_Store
 
 external/

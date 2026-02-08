@@ -217,13 +217,18 @@ bool OrbitGlWidget::updateSatellite(int id, const OrbitalElements& elements, int
     if (it == satellites_.end())
         return false;
 
-    // Only reset keplerEpoch if mean anomaly changed
-    if (it->info.elements.meanAnomalyDeg != elements.meanAnomalyDeg) {
+    // Reset keplerEpoch whenever any element changes to keep marker synchronized
+    if (it->info.elements.semiMajorAxis != elements.semiMajorAxis ||
+        it->info.elements.eccentricity != elements.eccentricity ||
+        it->info.elements.inclinationDeg != elements.inclinationDeg ||
+        it->info.elements.raanDeg != elements.raanDeg ||
+        it->info.elements.argPeriapsisDeg != elements.argPeriapsisDeg ||
+        it->info.elements.meanAnomalyDeg != elements.meanAnomalyDeg) {
         it->keplerEpoch = simTime_;
     }
     it->info.elements = elements;
     it->info.segments = segments;
-    rebuildSatelliteGeometry(*it);   // <-- Add this line
+    rebuildSatelliteGeometry(*it);
     rebuildSatelliteVbo(*it);
     return true;
 }
@@ -424,19 +429,21 @@ void OrbitGlWidget::paintGL()
         glBindVertexArray(0);
     }
 
-    // Draw satellite markers (Keplerian propagation so the marker lies on the drawn Kepler orbit)
+    // Draw satellite markers (ECI time-based propagation)
     if (markerVao_ != 0 && markerVbo_ != 0) {
         glPointSize(6.0f);
         glBindVertexArray(markerVao_);
         glBindBuffer(GL_ARRAY_BUFFER, markerVbo_);
         for (const auto& sat : satellites_) {
-            const auto dt = simTime_ - sat.keplerEpoch;
-            const double dtSec = std::chrono::duration_cast<std::chrono::duration<double>>(dt).count();
+            // Use ECI time propagation
+            const auto epoch = sat.keplerEpoch;
+            const auto now = simTime_;
+            const double dtSec = std::chrono::duration_cast<std::chrono::duration<double>>(now - epoch).count();
 
+            // Compute mean anomaly at ECI time
             const double a = sat.info.elements.semiMajorAxis;
             const double e = sat.info.elements.eccentricity;
             const double n = std::sqrt(kEarthMuRe3PerS2 / (a * a * a)); // rad/s
-
             const double M0 = degToRad(sat.info.elements.meanAnomalyDeg);
             const double M = M0 + n * dtSec;
             const double nu = trueAnomalyFromMean(M, e);
@@ -456,18 +463,16 @@ void OrbitGlWidget::paintGL()
     if (axisVao_ != 0 && axisVertices_.size() >= 18) {
         glBindVertexArray(axisVao_);
 
-        const QVector3D axisGrey(0.65f, 0.65f, 0.65f);
-
-        // X axis
-        program_.setUniformValue("uColor", axisGrey);
+        // X axis - Red
+        program_.setUniformValue("uColor", QVector3D(1.0f, 0.0f, 0.0f));
         glDrawArrays(GL_LINES, 0, 2);
 
-        // Y axis
-        program_.setUniformValue("uColor", axisGrey);
+        // Y axis - Green
+        program_.setUniformValue("uColor", QVector3D(0.0f, 1.0f, 0.0f));
         glDrawArrays(GL_LINES, 2, 2);
 
-        // Z axis
-        program_.setUniformValue("uColor", axisGrey);
+        // Z axis - Blue
+        program_.setUniformValue("uColor", QVector3D(0.0f, 0.0f, 1.0f));
         glDrawArrays(GL_LINES, 4, 2);
 
         glBindVertexArray(0);

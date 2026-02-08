@@ -13,4 +13,5 @@ public:
 
 private:
     OrbitGlWidget* glWidget_ = nullptr;
+    int nextSatelliteNumber_ = 1;
 };

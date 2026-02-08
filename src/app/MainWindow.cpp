@@ -118,8 +118,6 @@ MainWindow::MainWindow(QWidget* parent)
     listLayout->addStretch(1);
     scroll->setWidget(listHost);
 
-    int satelliteNumber = 1;
-
     auto addSatelliteEditor = [this, listHost, listLayout](int id, const QString& name, const OrbitalElements& initial) {
         QWidget* satContent = nullptr;
         auto* satGroup = makeCollapsibleGroup(name, listHost, &satContent);
@@ -287,7 +285,7 @@ MainWindow::MainWindow(QWidget* parent)
     {
         const OrbitalElements el = defaultLeoElements();
         const int segments = 512;
-        const QString name = QString("Satellite %1").arg(satelliteNumber++);
+        const QString name = QString("Satellite %1").arg(nextSatelliteNumber_++);
         const int id = glWidget_->addSatellite(name, el, segments);
         addSatelliteEditor(id, name, el);
 
@@ -299,10 +297,10 @@ MainWindow::MainWindow(QWidget* parent)
             QStringLiteral("2 25544  51.6424  64.6985 0003317  85.3223  38.9395 15.50156700441045"));
     }
 
-    connect(addBtn, &QPushButton::clicked, this, [this, &satelliteNumber, addSatelliteEditor]() mutable {
+    connect(addBtn, &QPushButton::clicked, this, [this, addSatelliteEditor]() mutable {
         const OrbitalElements el = defaultLeoElements();
         const int segments = 512;
-        const QString name = QString("Satellite %1").arg(satelliteNumber++);
+        const QString name = QString("Satellite %1").arg(nextSatelliteNumber_++);
         const int id = glWidget_->addSatellite(name, el, segments);
         addSatelliteEditor(id, name, el);
     });

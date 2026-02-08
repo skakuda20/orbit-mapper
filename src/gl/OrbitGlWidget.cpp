@@ -463,6 +463,7 @@ void OrbitGlWidget::paintGL()
     if (axisVao_ != 0 && axisVertices_.size() >= 18) {
         glBindVertexArray(axisVao_);
 
+        /*
         // X axis - Red
         program_.setUniformValue("uColor", QVector3D(1.0f, 0.0f, 0.0f));
         glDrawArrays(GL_LINES, 0, 2);
@@ -474,6 +475,18 @@ void OrbitGlWidget::paintGL()
         // Z axis - Blue
         program_.setUniformValue("uColor", QVector3D(0.0f, 0.0f, 1.0f));
         glDrawArrays(GL_LINES, 4, 2);
+        */
+        const QVector3D axisGrey(0.65f, 0.65f, 0.65f);
+
+        program_.setUniformValue("uColor", axisGrey);
+        glDrawArrays(GL_LINES, 0, 2);
+
+        program_.setUniformValue("uColor", axisGrey);
+        glDrawArrays(GL_LINES, 2, 2);
+
+        program_.setUniformValue("uColor", axisGrey);
+        glDrawArrays(GL_LINES, 4, 2);
+
 
         glBindVertexArray(0);
     }

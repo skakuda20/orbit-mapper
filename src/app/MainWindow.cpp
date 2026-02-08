@@ -147,22 +147,23 @@ MainWindow::MainWindow(QWidget* parent)
 
         // Add sliders and spinboxes for each element
         auto* aSpin = new QDoubleSpinBox(elementsContent);
-        aSpin->setDecimals(6);
-        aSpin->setRange(0.1, 1000.0);
-        aSpin->setSingleStep(0.001);
-        aSpin->setToolTip("Semi-major axis a (Earth radii)");
-        aSpin->setValue(initial.semiMajorAxis);
+        aSpin->setDecimals(1);
+        aSpin->setRange(6378.137, 6378.137 * 3.0); // Earth radius to 3x Earth radius in km
+        aSpin->setSingleStep(1.0);
+        aSpin->setToolTip("Semi-major axis a (km)");
+        // Convert Earth radii to km for display
+        aSpin->setValue(initial.semiMajorAxis * 6378.137);
         auto* aSlider = new QSlider(Qt::Horizontal, elementsContent);
-        aSlider->setRange(0, 10000); // 0.0 to 10.0, step 0.001 * 1000
-        aSlider->setValue(static_cast<int>(initial.semiMajorAxis * 1000));
-        QObject::connect(aSlider, &QSlider::valueChanged, aSpin, [aSpin](int v){ aSpin->setValue(v/1000.0); });
-        QObject::connect(aSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), aSlider, [aSlider](double v){ aSlider->setValue(static_cast<int>(v*1000)); });
+        aSlider->setRange(6378, 19134); // ~6378 km to ~19134 km
+        aSlider->setValue(static_cast<int>(initial.semiMajorAxis * 6378.137));
+        QObject::connect(aSlider, &QSlider::valueChanged, aSpin, [aSpin](int v){ aSpin->setValue(v); });
+        QObject::connect(aSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), aSlider, [aSlider](double v){ aSlider->setValue(static_cast<int>(v)); });
         auto* aWidget = new QWidget(elementsContent);
         auto* aLayout = new QVBoxLayout(aWidget);
         aLayout->setContentsMargins(0,0,0,0);
         aLayout->addWidget(aSpin);
         aLayout->addWidget(aSlider);
-        elementsForm->addRow("a (Re)", aWidget);
+        elementsForm->addRow("a (km)", aWidget);
 
         auto* eSpin = new QDoubleSpinBox(elementsContent);
         eSpin->setDecimals(8);
@@ -271,7 +272,8 @@ MainWindow::MainWindow(QWidget* parent)
 
         auto pushToGl = [this, id, aSpin, eSpin, iSpin, raanSpin, argpSpin, meanAnomSpin, segmentsSpin]() {
             OrbitalElements el;
-            el.semiMajorAxis = aSpin->value();
+            // Convert kilometers to Earth radii (Earth radius = 6378.137 km)
+            el.semiMajorAxis = aSpin->value() / 6378.137;
             el.eccentricity = eSpin->value();
             el.inclinationDeg = iSpin->value();
             el.raanDeg = raanSpin->value();

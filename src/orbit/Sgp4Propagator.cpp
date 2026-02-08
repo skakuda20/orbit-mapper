@@ -79,8 +79,9 @@ EciState Sgp4Propagator::propagate(std::chrono::system_clock::time_point t) cons
     // Stub output: circular orbit in XY plane.
     EciState state;
     const double r = 3.0;
-    state.position = {r, 0.0, 0.0};
-    state.velocity = {0.0, 0.0, 0.0};
+    // Render convention: (x,y,z) -> (x,z,-y)
+    state.position = {r, 0.0, -0.0};
+    state.velocity = {0.0, 0.0, -0.0};
     return state;
 #else
     EciState state;
@@ -101,8 +102,10 @@ EciState Sgp4Propagator::propagate(std::chrono::system_clock::time_point t) cons
         return state;
     }
 
-    state.position = {rKm[0] / kEarthRadiusKm, rKm[1] / kEarthRadiusKm, rKm[2] / kEarthRadiusKm};
-    state.velocity = {vKmps[0] / kEarthRadiusKm, vKmps[1] / kEarthRadiusKm, vKmps[2] / kEarthRadiusKm};
+    // Render convention: +Y is up.
+    // Remap SGP4 ECI (x,y,z) to render coords (x,z,-y) to match Kepler/OrbitSampler.
+    state.position = {rKm[0] / kEarthRadiusKm, rKm[2] / kEarthRadiusKm, -rKm[1] / kEarthRadiusKm};
+    state.velocity = {vKmps[0] / kEarthRadiusKm, vKmps[2] / kEarthRadiusKm, -vKmps[1] / kEarthRadiusKm};
     return state;
 #endif
 }

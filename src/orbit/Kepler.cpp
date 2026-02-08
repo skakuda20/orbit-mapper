@@ -55,9 +55,10 @@ std::array<double, 3> positionEciFromElements(const OrbitalElements& elements, d
     const double y = r21 * x_p + r22 * y_p + r23 * z_p;
     const double z = r31 * x_p + r32 * y_p + r33 * z_p;
 
-    // Rotate 90 degrees around X-axis: (x,y,z) -> (x,-z,y)
-    // This moves equatorial orbits from X-Y plane to X-Z plane
-    return {x, -z, y};
+    // Render convention: +Y is up.
+    // Rotate -90 degrees around X-axis: (x,y,z) -> (x,z,-y)
+    // This moves equatorial orbits from X-Y plane to X-Z plane.
+    return {x, z, -y};
 }
 
 } // namespace Kepler

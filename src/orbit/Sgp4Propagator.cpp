@@ -16,18 +16,33 @@ constexpr double kEarthRadiusKm = 6378.137;
 constexpr double kRadToDeg = 57.295779513082320876798154814105;
 constexpr double kEarthMuKm3PerS2 = 398600.4418;  // Earth's gravitational parameter
 
-static double unixSecondsToJulianDate(double unixSeconds)
+#if !defined(ORBIT_MAPPER_SGP4_STUB) || (ORBIT_MAPPER_SGP4_STUB == 0)
+static libsgp4::DateTime toLibSgp4DateTime(std::chrono::system_clock::time_point tp)
 {
-    // Unix epoch (1970-01-01 00:00:00 UTC) = JD 2440587.5
-    return 2440587.5 + (unixSeconds / 86400.0);
-}
+    using namespace std::chrono;
 
-static double toJulianDate(std::chrono::system_clock::time_point tp)
-{
-    const auto sinceEpoch = tp.time_since_epoch();
-    const auto seconds = std::chrono::duration_cast<std::chrono::duration<double>>(sinceEpoch).count();
-    return unixSecondsToJulianDate(seconds);
+    const auto secTp = time_point_cast<seconds>(tp);
+    const auto us = duration_cast<microseconds>(tp - secTp).count();
+
+    const std::time_t tt = system_clock::to_time_t(secTp);
+
+    std::tm utc{};
+#if defined(_WIN32)
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+
+    const int year = utc.tm_year + 1900;
+    const int month = utc.tm_mon + 1;
+    const int day = utc.tm_mday;
+    const int hour = utc.tm_hour;
+    const int minute = utc.tm_min;
+    const int second = utc.tm_sec;
+
+    return libsgp4::DateTime(year, month, day, hour, minute, second, static_cast<int>(us));
 }
+#endif
 } // namespace
 
 struct Sgp4Propagator::Context
@@ -76,11 +91,8 @@ EciState Sgp4Propagator::propagate(std::chrono::system_clock::time_point t) cons
     }
 
     try {
-        // Convert system clock to libsgp4 DateTime
-        const auto jd = toJulianDate(t);
-        const auto days = static_cast<int>(jd);
-        const auto fraction = jd - days;
-        libsgp4::DateTime dt(days, fraction);
+        // Convert system clock to libsgp4 DateTime (UTC)
+        const libsgp4::DateTime dt = toLibSgp4DateTime(t);
 
         // Propagate to get ECI position
         const auto eci = ctx_->sgp4->FindPosition(dt);
@@ -88,7 +100,8 @@ EciState Sgp4Propagator::propagate(std::chrono::system_clock::time_point t) cons
         const auto vel = eci.Velocity();
 
         // Render convention: +Y is up.
-        // Remap SGP4 ECI (x,y,z) to render coords (x,z,-y) to match Kepler/OrbitSampler.
+        // Keep SGP4 and Kepler consistent: map ECI (x,y,z) -> render (x,z,-y)
+        // so equatorial orbits lie in the X-Z plane (render Y=0).
         state.position = {pos.x / kEarthRadiusKm, pos.z / kEarthRadiusKm, -pos.y / kEarthRadiusKm};
         state.velocity = {vel.x / kEarthRadiusKm, vel.z / kEarthRadiusKm, -vel.y / kEarthRadiusKm};
         return state;
@@ -111,8 +124,8 @@ bool Sgp4Propagator::tryGetMeanElements(OrbitalElements& outElements) const
 
     try {
         // libsgp4::Tle stores elements with accessors.
-        // Mean motion is in radians per minute; convert to semi-major axis.
-        const double n = ctx_->tle->MeanMotion() * (2.0 * 3.141592653589793238462643383279502884) / 86400.0;  // Convert to rad/s
+        // Mean motion is in revolutions per day; convert to rad/s.
+        const double n = ctx_->tle->MeanMotion() * (2.0 * 3.141592653589793238462643383279502884) / 86400.0;
         const double a = std::cbrt(kEarthMuKm3PerS2 / (n * n));  // Semi-major axis in km
         
         outElements.semiMajorAxis = a / kEarthRadiusKm;
@@ -122,6 +135,29 @@ bool Sgp4Propagator::tryGetMeanElements(OrbitalElements& outElements) const
         outElements.argPeriapsisDeg = ctx_->tle->ArgumentPerigee(true);  // true = in degrees
         outElements.meanAnomalyDeg = ctx_->tle->MeanAnomaly(true);  // true = in degrees
         return true;
+    } catch (...) {
+        return false;
+    }
+#endif
+}
+
+bool Sgp4Propagator::tryGetOrbitalPeriodSeconds(double& outPeriodSeconds) const
+{
+#if defined(ORBIT_MAPPER_SGP4_STUB) && (ORBIT_MAPPER_SGP4_STUB != 0)
+    (void)outPeriodSeconds;
+    return false;
+#else
+    if (!ctx_ || !ctx_->tle) {
+        return false;
+    }
+
+    try {
+        const double meanMotionRevPerDay = ctx_->tle->MeanMotion();
+        if (meanMotionRevPerDay <= 0.0) {
+            return false;
+        }
+        outPeriodSeconds = 86400.0 / meanMotionRevPerDay;
+        return std::isfinite(outPeriodSeconds) && outPeriodSeconds > 0.0;
     } catch (...) {
         return false;
     }

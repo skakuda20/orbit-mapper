@@ -8,6 +8,11 @@
 #include <QSlider>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QPlainTextEdit>
+#include <QLabel>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QFormLayout>
@@ -105,7 +110,11 @@ MainWindow::MainWindow(QWidget* parent)
     panelLayout->setSpacing(8);
 
     auto* addBtn = new QPushButton("Add Satellite", panel);
-    panelLayout->addWidget(addBtn);
+    auto* addTleBtn = new QPushButton("Add from TLE", panel);
+    auto* topBtnLayout = new QHBoxLayout();
+    topBtnLayout->addWidget(addBtn);
+    topBtnLayout->addWidget(addTleBtn);
+    panelLayout->addLayout(topBtnLayout);
 
     auto* scroll = new QScrollArea(panel);
     scroll->setWidgetResizable(true);
@@ -118,7 +127,11 @@ MainWindow::MainWindow(QWidget* parent)
     listLayout->addStretch(1);
     scroll->setWidget(listHost);
 
-    auto addSatelliteEditor = [this, listHost, listLayout](int id, const QString& name, const OrbitalElements& initial) {
+    auto addSatelliteEditor = [this, listHost, listLayout](
+                                  int id,
+                                  const QString& name,
+                                  const OrbitalElements& initial,
+                                  bool elementsEditable) {
         QWidget* satContent = nullptr;
         auto* satGroup = makeCollapsibleGroup(name, listHost, &satContent);
 
@@ -139,6 +152,12 @@ MainWindow::MainWindow(QWidget* parent)
         QWidget* elementsContent = nullptr;
         auto* elementsGroup = makeCollapsibleGroup("Orbital Elements", satContent, &elementsContent);
         satLayout->addWidget(elementsGroup);
+
+        if (!elementsEditable) {
+            // TLE/SGP4-driven satellites ignore manual orbital elements.
+            // Hide the manual controls to avoid confusing “sliders don’t work” UX.
+            elementsGroup->setVisible(false);
+        }
 
         auto* elementsForm = new QFormLayout(elementsContent);
         elementsForm->setContentsMargins(0, 0, 0, 0);
@@ -281,20 +300,24 @@ MainWindow::MainWindow(QWidget* parent)
         listLayout->insertWidget(listLayout->count() - 1, satGroup);
     };
 
+    auto getElementsForSatelliteId = [this](int id, const OrbitalElements& fallback) {
+        for (const auto& info : glWidget_->satellites()) {
+            if (info.id == id) {
+                return info.elements;
+            }
+        }
+        return fallback;
+    };
+
     // Start with one satellite by default
     {
         const OrbitalElements el = defaultLeoElements();
         const int segments = 512;
         const QString name = QString("Satellite %1").arg(nextSatelliteNumber_++);
         const int id = glWidget_->addSatellite(name, el, segments);
-        addSatelliteEditor(id, name, el);
 
-        // Default TLE (ISS) so SGP4 propagation is visible immediately.
-        // These lines can be replaced later by user-input UI.
-        glWidget_->setSatelliteTle(
-            id,
-            QStringLiteral("1 25544U 98067A   24035.51098992  .00016717  00000-0  30206-3 0  9995"),
-            QStringLiteral("2 25544  51.6424  64.6985 0003317  85.3223  38.9395 15.50156700441045"));
+        // Keep the initial satellite editable (Kepler-driven) by default.
+        addSatelliteEditor(id, name, el, /*elementsEditable=*/true);
     }
 
     connect(addBtn, &QPushButton::clicked, this, [this, addSatelliteEditor]() mutable {
@@ -302,7 +325,73 @@ MainWindow::MainWindow(QWidget* parent)
         const int segments = 512;
         const QString name = QString("Satellite %1").arg(nextSatelliteNumber_++);
         const int id = glWidget_->addSatellite(name, el, segments);
-        addSatelliteEditor(id, name, el);
+        addSatelliteEditor(id, name, el, /*elementsEditable=*/true);
+    });
+
+    connect(addTleBtn,
+            &QPushButton::clicked,
+            this,
+            [this, addSatelliteEditor, getElementsForSatelliteId]() mutable {
+        // TLE input dialog
+        auto* dialog = new QDialog(this);
+        dialog->setWindowTitle("Add Satellite from TLE");
+        dialog->setMinimumWidth(500);
+
+        auto* layout = new QVBoxLayout(dialog);
+
+        auto* instrLabel = new QLabel("Paste TLE data (two lines):", dialog);
+        layout->addWidget(instrLabel);
+
+        auto* textEdit = new QPlainTextEdit(dialog);
+        textEdit->setPlaceholderText("1 25544U 98067A   24035.51098992  .00016717  00000-0  30206-3 0  9995\n"
+                                      "2 25544  51.6424  64.6985 0003317  85.3223  38.9395 15.50156700441045");
+        layout->addWidget(textEdit);
+
+        auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+        layout->addWidget(buttonBox);
+
+        connect(buttonBox,
+            &QDialogButtonBox::accepted,
+            dialog,
+            [this, dialog, textEdit, addSatelliteEditor, getElementsForSatelliteId]() {
+            const QString text = textEdit->toPlainText();
+            const QStringList lines = text.split('\n', Qt::SkipEmptyParts);
+
+            if (lines.size() < 2) {
+                QMessageBox::warning(this, "Error", "Please provide both TLE lines.");
+                return;
+            }
+
+            const QString line1 = lines[0].trimmed();
+            const QString line2 = lines[1].trimmed();
+
+            // Create satellite with default Keplerian elements
+            const OrbitalElements el = defaultLeoElements();
+            const int segments = 512;
+            const QString name = QString("Satellite %1").arg(nextSatelliteNumber_++);
+            const int id = glWidget_->addSatellite(name, el, segments);
+
+            // Load TLE and sync orbit
+            const bool tleOk = glWidget_->setSatelliteTle(id, line1, line2);
+            if (!tleOk) {
+                QMessageBox::warning(
+                    this,
+                    "SGP4 disabled",
+                    "This build was compiled without SGP4 support, so TLE propagation is unavailable.\n\n"
+                    "Reconfigure with -DORBIT_MAPPER_ENABLE_SGP4=ON and rebuild.");
+            }
+
+            // Show mean elements (if available) but disable editing for TLE satellites.
+            const OrbitalElements uiEl = tleOk ? getElementsForSatelliteId(id, el) : el;
+            addSatelliteEditor(id, name, uiEl, /*elementsEditable=*/!tleOk);
+
+            dialog->accept();
+        });
+
+        connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+
+        dialog->exec();
+        dialog->deleteLater();
     });
 
     dock->setWidget(panel);

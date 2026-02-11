@@ -19,6 +19,9 @@ public:
     // Useful for drawing an orbit polyline that matches the SGP4-propagated marker.
     bool tryGetMeanElements(OrbitalElements& outElements) const;
 
+    // Returns orbital period in seconds (best-effort).
+    bool tryGetOrbitalPeriodSeconds(double& outPeriodSeconds) const;
+
 private:
     struct Context;
     std::shared_ptr<const Context> ctx_;

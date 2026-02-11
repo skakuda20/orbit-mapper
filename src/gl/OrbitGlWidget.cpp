@@ -247,19 +247,33 @@ bool OrbitGlWidget::updateSatellite(int id, const OrbitalElements& elements, int
     if (it == satellites_.end())
         return false;
 
-    // Reset keplerEpoch whenever any element changes to keep marker synchronized
-    if (it->info.elements.semiMajorAxis != elements.semiMajorAxis ||
+    const bool elementsChanged =
+        it->info.elements.semiMajorAxis != elements.semiMajorAxis ||
         it->info.elements.eccentricity != elements.eccentricity ||
         it->info.elements.inclinationDeg != elements.inclinationDeg ||
         it->info.elements.raanDeg != elements.raanDeg ||
         it->info.elements.argPeriapsisDeg != elements.argPeriapsisDeg ||
-        it->info.elements.meanAnomalyDeg != elements.meanAnomalyDeg) {
-        it->keplerEpoch = simTime_;
+        it->info.elements.meanAnomalyDeg != elements.meanAnomalyDeg;
+
+    // If this satellite is driven by a propagator (e.g. TLE/SGP4), keep it
+    // propagator-driven and treat UI orbital-element changes as no-ops.
+    if (!it->propagator) {
+        // Reset keplerEpoch whenever any element changes to keep marker synchronized
+        if (elementsChanged) {
+            it->keplerEpoch = simTime_;
+        }
+        it->info.elements = elements;
     }
-    it->info.elements = elements;
     it->info.segments = segments;
     rebuildSatelliteGeometry(*it);
-    rebuildSatelliteVbo(*it);
+
+    if (glInitialized_) {
+        makeCurrent();
+        rebuildSatelliteVbo(*it);
+        doneCurrent();
+    }
+
+    update();
     return true;
 }
 
@@ -326,6 +340,13 @@ void OrbitGlWidget::setTimeScale(double timeScale)
 
 bool OrbitGlWidget::setSatelliteTle(int id, const QString& line1, const QString& line2)
 {
+#if defined(ORBIT_MAPPER_SGP4_STUB) && (ORBIT_MAPPER_SGP4_STUB != 0)
+    Q_UNUSED(id);
+    Q_UNUSED(line1);
+    Q_UNUSED(line2);
+    // Built without SGP4 support: keep satellites Kepler-driven.
+    return false;
+#else
     auto* sat = findSatellite(id);
     if (!sat) {
         return false;
@@ -340,17 +361,20 @@ bool OrbitGlWidget::setSatelliteTle(int id, const QString& line1, const QString&
         if (sgp4->tryGetMeanElements(meanEl)) {
             sat->info.elements = meanEl;
             sat->keplerEpoch = simTime_;
-            sat->vertices = OrbitSampler::sampleOrbitPolyline(sat->info.elements, sat->info.segments);
-            if (glInitialized_) {
-                makeCurrent();
-                rebuildSatelliteVbo(*sat);
-                doneCurrent();
-            }
         }
+    }
+
+    // Rebuild orbit polyline. If SGP4 is available, this will sample the propagator.
+    rebuildSatelliteGeometry(*sat);
+    if (glInitialized_) {
+        makeCurrent();
+        rebuildSatelliteVbo(*sat);
+        doneCurrent();
     }
 
     update();
     return true;
+#endif
 }
 
 void OrbitGlWidget::initializeGL()
@@ -399,7 +423,7 @@ void OrbitGlWidget::initializeGL()
     for (auto& sat : satellites_) {
         glGenVertexArrays(1, &sat.vao);
         glGenBuffers(1, &sat.vbo);
-        sat.vertices = OrbitSampler::sampleOrbitPolyline(sat.info.elements, sat.info.segments);
+        rebuildSatelliteGeometry(sat);
         rebuildSatelliteVbo(sat);
     }
 
@@ -476,19 +500,26 @@ void OrbitGlWidget::paintGL()
         glBindVertexArray(markerVao_);
         glBindBuffer(GL_ARRAY_BUFFER, markerVbo_);
         for (const auto& sat : satellites_) {
-            // Use ECI time propagation
-            const auto epoch = sat.keplerEpoch;
-            const auto now = simTime_;
-            const double dtSec = std::chrono::duration_cast<std::chrono::duration<double>>(now - epoch).count();
+            std::array<double, 3> pos{};
 
-            // Compute mean anomaly at ECI time
-            const double a = sat.info.elements.semiMajorAxis;
-            const double e = sat.info.elements.eccentricity;
-            const double n = std::sqrt(kEarthMuRe3PerS2 / (a * a * a)); // rad/s
-            const double M0 = degToRad(sat.info.elements.meanAnomalyDeg);
-            const double M = M0 + n * dtSec;
-            const double nu = trueAnomalyFromMean(M, e);
-            const auto pos = Kepler::positionEciFromElements(sat.info.elements, nu);
+            if (sat.propagator) {
+                // SGP4 (or other) propagation uses absolute simulation time.
+                const EciState state = sat.propagator->propagate(simTime_);
+                pos = state.position;
+            } else {
+                // Kepler propagation from orbital elements.
+                const auto epoch = sat.keplerEpoch;
+                const auto now = simTime_;
+                const double dtSec = std::chrono::duration_cast<std::chrono::duration<double>>(now - epoch).count();
+
+                const double a = sat.info.elements.semiMajorAxis;
+                const double e = sat.info.elements.eccentricity;
+                const double n = std::sqrt(kEarthMuRe3PerS2 / (a * a * a)); // rad/s
+                const double M0 = degToRad(sat.info.elements.meanAnomalyDeg);
+                const double M = M0 + n * dtSec;
+                const double nu = trueAnomalyFromMean(M, e);
+                pos = Kepler::positionEciFromElements(sat.info.elements, nu);
+            }
 
             const float p[3] = {static_cast<float>(pos[0]), static_cast<float>(pos[1]), static_cast<float>(pos[2])};
             glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(p), p);
@@ -649,6 +680,10 @@ void OrbitGlWidget::rebuildEarthMesh(int stacks, int slices, float radius)
 
 void OrbitGlWidget::rebuildSatelliteVbo(Satellite& sat)
 {
+    if (sat.vao == 0 || sat.vbo == 0) {
+        return;
+    }
+
     glBindVertexArray(sat.vao);
     glBindBuffer(GL_ARRAY_BUFFER, sat.vbo);
 
@@ -667,6 +702,55 @@ void OrbitGlWidget::rebuildSatelliteVbo(Satellite& sat)
 
 void OrbitGlWidget::rebuildSatelliteGeometry(Satellite& sat)
 {
+    // If a propagator exists (e.g. SGP4), sample it over one estimated orbital period.
+    if (sat.propagator) {
+        double periodSec = 0.0;
+        if (auto* sgp4 = dynamic_cast<Sgp4Propagator*>(sat.propagator.get())) {
+            (void)sgp4->tryGetOrbitalPeriodSeconds(periodSec);
+        }
+        if (!(std::isfinite(periodSec) && periodSec > 0.0)) {
+            // Fallback: estimate from current elements (two-body period).
+            const double a = sat.info.elements.semiMajorAxis;
+            if (a > 0.0) {
+                const double n = std::sqrt(kEarthMuRe3PerS2 / (a * a * a));
+                if (n > 0.0) {
+                    periodSec = (2.0 * kPi) / n;
+                }
+            }
+        }
+        if (!(std::isfinite(periodSec) && periodSec > 0.0)) {
+            periodSec = 5400.0; // ~90 minutes
+        }
+
+        const int segments = std::max(8, sat.info.segments);
+        std::vector<float> out;
+        out.reserve(static_cast<size_t>(segments + 1) * 3);
+
+        const auto t0 = simTime_;
+        for (int s = 0; s <= segments; ++s) {
+            const double u = static_cast<double>(s) / static_cast<double>(segments);
+            const auto dt = std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                std::chrono::duration<double>(u * periodSec));
+            const EciState state = sat.propagator->propagate(t0 + dt);
+            out.push_back(static_cast<float>(state.position[0]));
+            out.push_back(static_cast<float>(state.position[1]));
+            out.push_back(static_cast<float>(state.position[2]));
+        }
+
+        // If propagation failed (all zeros), fall back to Kepler sampling.
+        bool allZero = true;
+        for (float v : out) {
+            if (std::abs(v) > 1e-6f) {
+                allZero = false;
+                break;
+            }
+        }
+        if (!allZero) {
+            sat.vertices = std::move(out);
+            return;
+        }
+    }
+
     sat.vertices = OrbitSampler::sampleOrbitPolyline(sat.info.elements, sat.info.segments);
 }
 

@@ -59,7 +59,7 @@ build_project() {
   root="$(repo_root)"
 
   cmake -S "$root" -B "$root/$BUILD_DIR" \
-    -DORBIT_MAPPER_ENABLE_SGP4=OFF \
+    -DORBIT_MAPPER_ENABLE_SGP4=ON \
     -DORBIT_MAPPER_QT_VERSION="$QT_VERSION"
 
   cmake --build "$root/$BUILD_DIR" -j

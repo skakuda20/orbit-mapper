@@ -40,6 +40,20 @@ install_deps_ubuntu() {
   fi
 }
 
+clone_sgp4() {
+  local root
+  root="$(repo_root)"
+  local sgp4_dir="$root/external/sgp4"
+
+  if [[ ! -d "$sgp4_dir" ]]; then
+    echo "==> Cloning libsgp4..."
+    mkdir -p "$root/external"
+    git clone https://github.com/dnwrnr/sgp4.git "$sgp4_dir"
+  else
+    echo "==> libsgp4 already cloned at $sgp4_dir"
+  fi
+}
+
 build_project() {
   local root
   root="$(repo_root)"
@@ -58,6 +72,9 @@ build_project() {
 main() {
   echo "==> Installing dependencies (Ubuntu, QT_VERSION=$QT_VERSION)"
   install_deps_ubuntu
+
+  echo "==> Cloning external dependencies"
+  clone_sgp4
 
   echo "==> Configuring and building (SGP4 disabled)"
   build_project

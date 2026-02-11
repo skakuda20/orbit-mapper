@@ -6,6 +6,9 @@
 #include "orbit/Propagator.h"
 #include "orbit/Sgp4Propagator.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QMouseEvent>
 #include <QTimer>
 #include <QWheelEvent>
@@ -63,6 +66,33 @@ void main() {
 static float clampf(float v, float lo, float hi)
 {
     return std::fmax(lo, std::fmin(hi, v));
+}
+
+static QString findEarthTexturePath()
+{
+    const QString fileName = QStringLiteral("2k_earth_nightmap.jpg");
+
+    QStringList candidates;
+
+#if defined(ORBIT_MAPPER_ASSETS_DIR)
+    candidates.push_back(QDir(QStringLiteral(ORBIT_MAPPER_ASSETS_DIR)).filePath(fileName));
+#endif
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    candidates.push_back(QDir(appDir).filePath(QStringLiteral("../assets/%1").arg(fileName)));
+    candidates.push_back(QDir(appDir).filePath(QStringLiteral("assets/%1").arg(fileName)));
+
+    const QString cwd = QDir::currentPath();
+    candidates.push_back(QDir(cwd).filePath(QStringLiteral("assets/%1").arg(fileName)));
+    candidates.push_back(QDir(cwd).filePath(QStringLiteral("../assets/%1").arg(fileName)));
+
+    for (const auto& p : candidates) {
+        const QString cleaned = QDir::cleanPath(p);
+        if (QFileInfo::exists(cleaned)) {
+            return cleaned;
+        }
+    }
+    return QString();
 }
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
@@ -352,7 +382,8 @@ void OrbitGlWidget::initializeGL()
     rebuildEarthMesh(/*stacks=*/48, /*slices=*/96, /*radius=*/1.0f);
 
     // Load Earth texture
-    QImage img(QStringLiteral("../assets/2k_earth_nightmap.jpg"));
+    const QString texPath = findEarthTexturePath();
+    QImage img(texPath);
     if (!img.isNull()) {
         img = img.convertToFormat(QImage::Format_RGBA8888);
         glGenTextures(1, &earthTex_);
@@ -402,18 +433,28 @@ void OrbitGlWidget::paintGL()
 
     QMatrix4x4 mvp = buildViewProjection();
 
-    // Draw textured Earth sphere
-    if (earthVao_ != 0 && earthIndexCount_ > 0 && earthTex_ != 0 && earthTexProgram_.isLinked()) {
-        earthTexProgram_.bind();
-        earthTexProgram_.setUniformValue("uMvp", mvp);
-        earthTexProgram_.setUniformValue("uTexture", 0);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, earthTex_);
-        glBindVertexArray(earthVao_);
-        glDrawElements(GL_TRIANGLES, earthIndexCount_, GL_UNSIGNED_INT, reinterpret_cast<void*>(0));
-        glBindVertexArray(0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        earthTexProgram_.release();
+    // Draw Earth sphere (textured if available, otherwise solid color)
+    if (earthVao_ != 0 && earthIndexCount_ > 0) {
+        if (earthTex_ != 0 && earthTexProgram_.isLinked()) {
+            earthTexProgram_.bind();
+            earthTexProgram_.setUniformValue("uMvp", mvp);
+            earthTexProgram_.setUniformValue("uTexture", 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, earthTex_);
+            glBindVertexArray(earthVao_);
+            glDrawElements(GL_TRIANGLES, earthIndexCount_, GL_UNSIGNED_INT, reinterpret_cast<void*>(0));
+            glBindVertexArray(0);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            earthTexProgram_.release();
+        } else {
+            program_.bind();
+            program_.setUniformValue("uMvp", mvp);
+            program_.setUniformValue("uColor", QVector3D(0.20f, 0.22f, 0.26f));
+            glBindVertexArray(earthVao_);
+            glDrawElements(GL_TRIANGLES, earthIndexCount_, GL_UNSIGNED_INT, reinterpret_cast<void*>(0));
+            glBindVertexArray(0);
+            program_.release();
+        }
     }
 
     // Draw satellite orbits

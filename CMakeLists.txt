@@ -10,7 +10,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-option(ORBIT_MAPPER_ENABLE_SGP4 "Enable SGP4 propagation support (FetchContent)" ON)
+option(ORBIT_MAPPER_ENABLE_SGP4 "Enable SGP4 propagation support" ON)
 
 set(ORBIT_MAPPER_QT_VERSION "6" CACHE STRING "Qt major version to use (6 or 5)")
 set_property(CACHE ORBIT_MAPPER_QT_VERSION PROPERTY STRINGS 6 5)
@@ -42,6 +42,9 @@ add_executable(orbit_mapper
 
 target_include_directories(orbit_mapper PRIVATE src)
 
+# Absolute path to the repo's assets directory (used for runtime texture lookup).
+target_compile_definitions(orbit_mapper PRIVATE ORBIT_MAPPER_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+
 target_link_libraries(orbit_mapper PRIVATE
   $<$<STREQUAL:${ORBIT_MAPPER_QT_VERSION},6>:Qt6::Widgets>
   $<$<STREQUAL:${ORBIT_MAPPER_QT_VERSION},6>:Qt6::OpenGL>
@@ -51,12 +54,12 @@ target_link_libraries(orbit_mapper PRIVATE
 )
 
 if (ORBIT_MAPPER_ENABLE_SGP4)
-  # Use the vendored SGP4 implementation.
-  # It defines a static library target named "SGP4".
+  # Use the vendored SGP4 implementation from external/sgp4.
+  # It defines a static library target named "sgp4".
   set(SGP4_WITH_TESTS OFF CACHE BOOL "Compile SGP4 test executables" FORCE)
   add_subdirectory(external/sgp4 EXCLUDE_FROM_ALL)
-  target_link_libraries(orbit_mapper PRIVATE SGP4)
-  target_include_directories(orbit_mapper PRIVATE external/sgp4/SGP4/SGP4)
+  target_link_libraries(orbit_mapper PRIVATE sgp4)
+  target_include_directories(orbit_mapper PRIVATE external/sgp4/libsgp4)
   target_compile_definitions(orbit_mapper PRIVATE ORBIT_MAPPER_SGP4_STUB=0)
 else()
   target_compile_definitions(orbit_mapper PRIVATE ORBIT_MAPPER_SGP4_STUB=1)

@@ -1,10 +1,12 @@
 #include "Sgp4Propagator.h"
 
 #include <cmath>
-#include <cstring>
+#include <memory>
 
 #if !defined(ORBIT_MAPPER_SGP4_STUB) || (ORBIT_MAPPER_SGP4_STUB == 0)
 #include "SGP4.h"
+#include "Tle.h"
+#include "DateTime.h"
 #endif
 
 namespace {
@@ -12,6 +14,7 @@ namespace {
 // Convert SGP4 km outputs to Earth radii.
 constexpr double kEarthRadiusKm = 6378.137;
 constexpr double kRadToDeg = 57.295779513082320876798154814105;
+constexpr double kEarthMuKm3PerS2 = 398600.4418;  // Earth's gravitational parameter
 
 static double unixSecondsToJulianDate(double unixSeconds)
 {
@@ -30,8 +33,8 @@ static double toJulianDate(std::chrono::system_clock::time_point tp)
 struct Sgp4Propagator::Context
 {
 #if !defined(ORBIT_MAPPER_SGP4_STUB) || (ORBIT_MAPPER_SGP4_STUB == 0)
-    elsetrec satrec{};
-    double epochJd = 0.0;
+    std::unique_ptr<libsgp4::SGP4> sgp4;
+    std::unique_ptr<libsgp4::Tle> tle;
 #else
     std::string line1;
     std::string line2;
@@ -46,30 +49,13 @@ Sgp4Propagator::Sgp4Propagator(std::string line1, std::string line2)
     const_cast<Context*>(ctx_.get())->line1 = std::move(line1);
     const_cast<Context*>(ctx_.get())->line2 = std::move(line2);
 #else
-    // twoline2rv mutates the input C strings to normalize formatting.
-    char l1[130] = {0};
-    char l2[130] = {0};
-    std::strncpy(l1, line1.c_str(), sizeof(l1) - 1);
-    std::strncpy(l2, line2.c_str(), sizeof(l2) - 1);
-
-    double startmfe = 0.0;
-    double stopmfe = 0.0;
-    double deltamin = 0.0;
-
-    auto* writable = const_cast<Context*>(ctx_.get());
-    SGP4Funcs::twoline2rv(
-        l1,
-        l2,
-        /*typerun=*/'c',
-        /*typeinput=*/'e',
-        /*opsmode=*/'i',
-        /*whichconst=*/wgs84,
-        startmfe,
-        stopmfe,
-        deltamin,
-        writable->satrec);
-
-    writable->epochJd = writable->satrec.jdsatepoch + writable->satrec.jdsatepochF;
+    try {
+        auto* writable = const_cast<Context*>(ctx_.get());
+        writable->tle = std::make_unique<libsgp4::Tle>(line1, line2);
+        writable->sgp4 = std::make_unique<libsgp4::SGP4>(*writable->tle);
+    } catch (...) {
+        // If TLE parsing fails, silently leave ctx_ in a safe state (sgp4/tle remain nullptr)
+    }
 #endif
 }
 
@@ -85,28 +71,31 @@ EciState Sgp4Propagator::propagate(std::chrono::system_clock::time_point t) cons
     return state;
 #else
     EciState state;
-    if (!ctx_) {
+    if (!ctx_ || !ctx_->sgp4) {
         return state;
     }
 
-    // sgp4() mutates satrec during the call, so use a local copy.
-    elsetrec sat = ctx_->satrec;
+    try {
+        // Convert system clock to libsgp4 DateTime
+        const auto jd = toJulianDate(t);
+        const auto days = static_cast<int>(jd);
+        const auto fraction = jd - days;
+        libsgp4::DateTime dt(days, fraction);
 
-    const double jd = toJulianDate(t);
-    const double tsinceMin = (jd - ctx_->epochJd) * 1440.0;
+        // Propagate to get ECI position
+        const auto eci = ctx_->sgp4->FindPosition(dt);
+        const auto pos = eci.Position();
+        const auto vel = eci.Velocity();
 
-    double rKm[3] = {0.0, 0.0, 0.0};
-    double vKmps[3] = {0.0, 0.0, 0.0};
-    const bool ok = SGP4Funcs::sgp4(sat, tsinceMin, rKm, vKmps);
-    if (!ok) {
+        // Render convention: +Y is up.
+        // Remap SGP4 ECI (x,y,z) to render coords (x,z,-y) to match Kepler/OrbitSampler.
+        state.position = {pos.x / kEarthRadiusKm, pos.z / kEarthRadiusKm, -pos.y / kEarthRadiusKm};
+        state.velocity = {vel.x / kEarthRadiusKm, vel.z / kEarthRadiusKm, -vel.y / kEarthRadiusKm};
+        return state;
+    } catch (...) {
+        // Silently return zero state on any propagation error
         return state;
     }
-
-    // Render convention: +Y is up.
-    // Remap SGP4 ECI (x,y,z) to render coords (x,z,-y) to match Kepler/OrbitSampler.
-    state.position = {rKm[0] / kEarthRadiusKm, rKm[2] / kEarthRadiusKm, -rKm[1] / kEarthRadiusKm};
-    state.velocity = {vKmps[0] / kEarthRadiusKm, vKmps[2] / kEarthRadiusKm, -vKmps[1] / kEarthRadiusKm};
-    return state;
 #endif
 }
 
@@ -116,18 +105,25 @@ bool Sgp4Propagator::tryGetMeanElements(OrbitalElements& outElements) const
     (void)outElements;
     return false;
 #else
-    if (!ctx_) {
+    if (!ctx_ || !ctx_->tle) {
         return false;
     }
 
-    // Vallado SGP4 stores angles in radians and a in Earth radii (er).
-    // These are mean elements from the TLE, which is what we want for drawing a matching orbit.
-    outElements.semiMajorAxis = ctx_->satrec.a;
-    outElements.eccentricity = ctx_->satrec.ecco;
-    outElements.inclinationDeg = ctx_->satrec.inclo * kRadToDeg;
-    outElements.raanDeg = ctx_->satrec.nodeo * kRadToDeg;
-    outElements.argPeriapsisDeg = ctx_->satrec.argpo * kRadToDeg;
-    outElements.meanAnomalyDeg = ctx_->satrec.mo * kRadToDeg;
-    return true;
+    try {
+        // libsgp4::Tle stores elements with accessors.
+        // Mean motion is in radians per minute; convert to semi-major axis.
+        const double n = ctx_->tle->MeanMotion() * (2.0 * 3.141592653589793238462643383279502884) / 86400.0;  // Convert to rad/s
+        const double a = std::cbrt(kEarthMuKm3PerS2 / (n * n));  // Semi-major axis in km
+        
+        outElements.semiMajorAxis = a / kEarthRadiusKm;
+        outElements.eccentricity = ctx_->tle->Eccentricity();
+        outElements.inclinationDeg = ctx_->tle->Inclination(true);  // true = in degrees
+        outElements.raanDeg = ctx_->tle->RightAscendingNode(true);  // true = in degrees
+        outElements.argPeriapsisDeg = ctx_->tle->ArgumentPerigee(true);  // true = in degrees
+        outElements.meanAnomalyDeg = ctx_->tle->MeanAnomaly(true);  // true = in degrees
+        return true;
+    } catch (...) {
+        return false;
+    }
 #endif
 }

@@ -19,6 +19,8 @@
 #include <QImage>
 #include <utility>
 
+#include <chrono>
+
 namespace {
 constexpr const char* kVertexShader = R"(
 #version 330 core
@@ -406,24 +408,15 @@ bool OrbitGlWidget::setSatelliteEphemeris(int id, const std::vector<EphemerisSam
         return a.t < b.t;
     });
 
-    if (sorted.size() < 2) {
+    if (sorted.empty()) {
         return false;
     }
 
     sat->propagator = std::make_unique<EphemerisPropagator>(sorted);
 
-    // Build a polyline directly from samples (converted to render units).
-    std::vector<float> out;
-    out.reserve(sorted.size() * 3);
-    for (const auto& s : sorted) {
-        const float x = static_cast<float>(s.positionKm[0] / kEarthRadiusKm);
-        const float y = static_cast<float>(s.positionKm[2] / kEarthRadiusKm);
-        const float z = static_cast<float>(-s.positionKm[1] / kEarthRadiusKm);
-        out.push_back(x);
-        out.push_back(y);
-        out.push_back(z);
-    }
-    sat->vertices = std::move(out);
+    // Rebuild orbit polyline. For a single sample this will attempt full-orbit
+    // rendering (SGP4 if synthesized, otherwise Kepler estimate from the state).
+    rebuildSatelliteGeometry(*sat);
 
     if (glInitialized_) {
         makeCurrent();
@@ -521,11 +514,14 @@ void OrbitGlWidget::paintGL()
 
     QMatrix4x4 mvp = buildViewProjection();
 
+    // Earth and orbits are drawn in the same inertial world frame.
+    const QMatrix4x4& earthMvp = mvp;
+
     // Draw Earth sphere (textured if available, otherwise solid color)
     if (earthVao_ != 0 && earthIndexCount_ > 0) {
         if (earthTex_ != 0 && earthTexProgram_.isLinked()) {
             earthTexProgram_.bind();
-            earthTexProgram_.setUniformValue("uMvp", mvp);
+            earthTexProgram_.setUniformValue("uMvp", earthMvp);
             earthTexProgram_.setUniformValue("uTexture", 0);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, earthTex_);
@@ -536,7 +532,7 @@ void OrbitGlWidget::paintGL()
             earthTexProgram_.release();
         } else {
             program_.bind();
-            program_.setUniformValue("uMvp", mvp);
+            program_.setUniformValue("uMvp", earthMvp);
             program_.setUniformValue("uColor", QVector3D(0.20f, 0.22f, 0.26f));
             glBindVertexArray(earthVao_);
             glDrawElements(GL_TRIANGLES, earthIndexCount_, GL_UNSIGNED_INT, reinterpret_cast<void*>(0));
@@ -684,6 +680,8 @@ void OrbitGlWidget::rebuildEarthMesh(int stacks, int slices, float radius)
             const float x = radius * static_cast<float>(sinPhi * cosTheta);
             const float y = radius * static_cast<float>(cosPhi);
             const float z = radius * static_cast<float>(sinPhi * sinTheta);
+
+            // Texture coordinates (no offsets).
             const float texU = static_cast<float>(u);
             const float texV = static_cast<float>(v);
 
@@ -773,9 +771,21 @@ void OrbitGlWidget::rebuildSatelliteGeometry(Satellite& sat)
 
         if (auto* eph = dynamic_cast<EphemerisPropagator*>(sat.propagator.get())) {
             const auto& samples = eph->samples();
-            if (samples.size() >= 2) {
-                t0 = samples.front().t;
-                periodSec = std::chrono::duration_cast<std::chrono::duration<double>>(samples.back().t - samples.front().t).count();
+            if (!samples.empty()) {
+                // Prefer a true orbital period if EphemerisPropagator can provide one
+                // (e.g. epoch-state inputs that synthesized SGP4).
+                double p = 0.0;
+                if (eph->tryGetOrbitalPeriodSeconds(p) && std::isfinite(p) && p > 0.0) {
+                    periodSec = p;
+                    // Start at current sim time so the polyline starts at the marker.
+                    t0 = simTime_;
+                } else if (samples.size() >= 2) {
+                    // Fallback: only the time span covered by discrete ephemeris samples.
+                    t0 = samples.front().t;
+                    periodSec = std::chrono::duration_cast<std::chrono::duration<double>>(samples.back().t - samples.front().t).count();
+                } else {
+                    t0 = samples.front().t;
+                }
             }
         }
 
@@ -783,6 +793,16 @@ void OrbitGlWidget::rebuildSatelliteGeometry(Satellite& sat)
             (void)sgp4->tryGetOrbitalPeriodSeconds(periodSec);
         }
         if (!(std::isfinite(periodSec) && periodSec > 0.0)) {
+            // Try to get Keplerian elements from ephemeris (computed from state vector).
+            OrbitalElements kepElements;
+            if (auto* eph = dynamic_cast<EphemerisPropagator*>(sat.propagator.get())) {
+                if (eph->tryGetKeplerianElements(kepElements)) {
+                    // Use Kepler-derived elements for rendering
+                    sat.vertices = OrbitSampler::sampleOrbitPolyline(kepElements, sat.info.segments);
+                    return;
+                }
+            }
+
             // Fallback: estimate from current elements (two-body period).
             const double a = sat.info.elements.semiMajorAxis;
             if (a > 0.0) {

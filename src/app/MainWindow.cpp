@@ -24,6 +24,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -71,17 +72,89 @@ static bool parseEphemerisText(
 {
     outSamples.clear();
 
+    auto parseYdddHhmmssUtc = [](const QString& token, std::chrono::system_clock::time_point& outTp) -> bool {
+        // Format: YYYYDDDHHMMSS(.sss)
+        // Example: 2026045201542.000 => 2026, day 045, 20:15:42.000
+        const QString trimmed = token.trimmed();
+        const int dot = trimmed.indexOf('.');
+        const QString intPart = dot >= 0 ? trimmed.left(dot) : trimmed;
+        const QString fracPart = dot >= 0 ? trimmed.mid(dot + 1) : QString();
+
+        if (intPart.size() != 13) {
+            return false;
+        }
+        bool ok = false;
+        const int year = intPart.mid(0, 4).toInt(&ok);
+        if (!ok) {
+            return false;
+        }
+        const int doy = intPart.mid(4, 3).toInt(&ok);
+        if (!ok || doy < 1 || doy > 366) {
+            return false;
+        }
+        const int hh = intPart.mid(7, 2).toInt(&ok);
+        if (!ok || hh < 0 || hh > 23) {
+            return false;
+        }
+        const int mm = intPart.mid(9, 2).toInt(&ok);
+        if (!ok || mm < 0 || mm > 59) {
+            return false;
+        }
+        const int ss = intPart.mid(11, 2).toInt(&ok);
+        if (!ok || ss < 0 || ss > 60) {
+            return false;
+        }
+
+        int ms = 0;
+        if (!fracPart.isEmpty()) {
+            // Keep milliseconds precision; accept any number of digits.
+            QString msStr = fracPart.left(3);
+            while (msStr.size() < 3) {
+                msStr.push_back('0');
+            }
+            ms = msStr.toInt(&ok);
+            if (!ok) {
+                return false;
+            }
+        }
+
+        QDate date(year, 1, 1);
+        if (!date.isValid()) {
+            return false;
+        }
+        date = date.addDays(doy - 1);
+        if (!date.isValid()) {
+            return false;
+        }
+
+        const QTime time(hh, mm, std::min(ss, 59), ms);
+        if (!time.isValid()) {
+            return false;
+        }
+
+        const QDateTime dt(date, time, Qt::UTC);
+        if (!dt.isValid()) {
+            return false;
+        }
+
+        outTp = std::chrono::system_clock::time_point{std::chrono::milliseconds(dt.toMSecsSinceEpoch())};
+        return true;
+    };
+
+    auto splitFields = [](QString line) -> QStringList {
+        line.replace(',', ' ');
+        return line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    };
+
     const QStringList lines = text.split('\n');
-    int lineNum = 0;
-    for (const QString& rawLine : lines) {
-        ++lineNum;
-        QString line = rawLine.trimmed();
+    for (int i = 0; i < lines.size(); ++i) {
+        const int lineNum = i + 1;
+        QString line = lines[i].trimmed();
         if (line.isEmpty() || line.startsWith('#')) {
             continue;
         }
 
-        line.replace(',', ' ');
-        QStringList parts = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        QStringList parts = splitFields(line);
 
         // Support timestamps that are split as "YYYY-MM-DD HH:MM:SS(.sss)Z"
         // by collapsing the first two tokens into ISO "YYYY-MM-DDTHH:MM:SS...".
@@ -99,21 +172,35 @@ static bool parseEphemerisText(
         }
 
         std::chrono::system_clock::time_point tp{};
+        bool parsedYddd = false;
+
         {
-            const QString tNorm = timeToken;
+            const QString tNorm = timeToken.trimmed();
+
+            // 1) ISO-8601
             QDateTime dt = QDateTime::fromString(tNorm, Qt::ISODateWithMs);
             if (!dt.isValid()) {
                 dt = QDateTime::fromString(tNorm, Qt::ISODate);
             }
-
             if (dt.isValid()) {
-                dt = dt.toUTC();
+                // If user didn't include a timezone, Qt treats it as LocalTime.
+                // For this app's UI, UTC is the least-surprising default.
+                if (dt.timeSpec() == Qt::LocalTime) {
+                    dt.setTimeSpec(Qt::UTC);
+                } else {
+                    dt = dt.toUTC();
+                }
                 tp = std::chrono::system_clock::time_point{std::chrono::milliseconds(dt.toMSecsSinceEpoch())};
+            } else if (parseYdddHhmmssUtc(tNorm, tp)) {
+                parsedYddd = true;
             } else {
+                // 2) Numeric seconds
                 bool ok = false;
                 const double secs = tNorm.toDouble(&ok);
                 if (!ok) {
-                    outError = QStringLiteral("Line %1: invalid time '%2' (use ISO-8601 or seconds)").arg(lineNum).arg(timeToken);
+                    outError = QStringLiteral("Line %1: invalid time '%2' (use ISO-8601, YYYYDDDHHMMSS(.sss), or seconds)")
+                                   .arg(lineNum)
+                                   .arg(timeToken);
                     return false;
                 }
 
@@ -127,7 +214,7 @@ static bool parseEphemerisText(
             }
         }
 
-        auto parseDouble = [&](int p, const char* label, double& outVal) -> bool {
+        auto parseDoubleAt = [&](int p, const char* label, double& outVal) -> bool {
             if (p >= parts.size()) {
                 outError = QStringLiteral("Line %1: missing %2").arg(lineNum).arg(QString::fromUtf8(label));
                 return false;
@@ -135,7 +222,10 @@ static bool parseEphemerisText(
             bool ok = false;
             outVal = parts[p].toDouble(&ok);
             if (!ok) {
-                outError = QStringLiteral("Line %1: invalid %2 '%3'").arg(lineNum).arg(QString::fromUtf8(label)).arg(parts[p]);
+                outError = QStringLiteral("Line %1: invalid %2 '%3'")
+                               .arg(lineNum)
+                               .arg(QString::fromUtf8(label))
+                               .arg(parts[p]);
                 return false;
             }
             return true;
@@ -143,20 +233,69 @@ static bool parseEphemerisText(
 
         EphemerisSample s;
         s.t = tp;
-        if (!parseDouble(idx + 0, "x", s.positionKm[0]) ||
-            !parseDouble(idx + 1, "y", s.positionKm[1]) ||
-            !parseDouble(idx + 2, "z", s.positionKm[2]) ||
-            !parseDouble(idx + 3, "vx", s.velocityKmPerS[0]) ||
-            !parseDouble(idx + 4, "vy", s.velocityKmPerS[1]) ||
-            !parseDouble(idx + 5, "vz", s.velocityKmPerS[2])) {
+        if (!parseDoubleAt(idx + 0, "x", s.positionKm[0]) ||
+            !parseDoubleAt(idx + 1, "y", s.positionKm[1]) ||
+            !parseDoubleAt(idx + 2, "z", s.positionKm[2]) ||
+            !parseDoubleAt(idx + 3, "vx", s.velocityKmPerS[0]) ||
+            !parseDoubleAt(idx + 4, "vy", s.velocityKmPerS[1]) ||
+            !parseDoubleAt(idx + 5, "vz", s.velocityKmPerS[2])) {
             return false;
+        }
+
+        // If the epoch is in compact numeric form, allow (and expect) covariance lines to follow.
+        // Covariance is accepted and stored but not currently used by the renderer.
+        if (parsedYddd) {
+            std::array<double, 21> cov{};
+            int covIdx = 0;
+            int covLinesRead = 0;
+            int j = i + 1;
+            while (j < lines.size() && covLinesRead < 3) {
+                QString covLine = lines[j].trimmed();
+                if (covLine.isEmpty() || covLine.startsWith('#')) {
+                    ++j;
+                    continue;
+                }
+                const int covLineNum = j + 1;
+                QStringList covParts = splitFields(covLine);
+                if (covParts.size() != 7) {
+                    outError = QStringLiteral("Line %1: expected 7 covariance values (got %2)")
+                                   .arg(covLineNum)
+                                   .arg(covParts.size());
+                    return false;
+                }
+                for (const QString& tok : covParts) {
+                    bool ok = false;
+                    const double v = tok.toDouble(&ok);
+                    if (!ok) {
+                        outError = QStringLiteral("Line %1: invalid covariance value '%2'")
+                                       .arg(covLineNum)
+                                       .arg(tok);
+                        return false;
+                    }
+                    if (covIdx < static_cast<int>(cov.size())) {
+                        cov[static_cast<size_t>(covIdx++)] = v;
+                    }
+                }
+                ++covLinesRead;
+                ++j;
+            }
+
+            if (covLinesRead == 3 && covIdx == 21) {
+                s.hasCovarianceUpper = true;
+                s.covarianceUpper = cov;
+                i = j - 1; // consume covariance lines
+            } else {
+                outError = QStringLiteral("Line %1: expected 3 covariance lines (21 values) after epoch state")
+                               .arg(lineNum);
+                return false;
+            }
         }
 
         outSamples.push_back(s);
     }
 
-    if (outSamples.size() < 2) {
-        outError = QStringLiteral("Need at least 2 ephemeris samples.");
+    if (outSamples.empty()) {
+        outError = QStringLiteral("No ephemeris samples found.");
         return false;
     }
 
@@ -618,6 +757,14 @@ MainWindow::MainWindow(QWidget* parent)
                 glWidget_->removeSatellite(id);
                 return;
             }
+
+            const QString infoMsg = samples.size() == 1 && !samples[0].hasCovarianceUpper
+                ? QStringLiteral("Single state sample loaded.\n\nAttempting to synthesize SGP4 model for full-orbit rendering.\nIf the orbit appears truncated, the state vector may not be physically valid.")
+                : samples[0].hasCovarianceUpper
+                ? QStringLiteral("Epoch state + covariance sample(s) loaded.\n\nSynthesizing SGP4 model(s) for full-orbit rendering.\nIf the orbit appears truncated, check that your state vectors are physically valid.")
+                : QStringLiteral("Ephemeris samples loaded.\n\nLinear interpolation mode: only the covered arc will be rendered.\nFor full-orbit visualization, provide epoch state + covariance data.")
+            ;
+            QMessageBox::information(this, "Ephemeris Loaded", infoMsg);
 
             addSatelliteEditor(id, name, el, /*elementsEditable=*/false);
             dialog->accept();

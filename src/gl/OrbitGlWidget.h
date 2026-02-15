@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "orbit/EphemerisPropagator.h"
 #include "orbit/OrbitalElements.h"
 
 class QMouseEvent;
@@ -48,8 +49,16 @@ public:
     // timeScale: 0 = paused, 1 = real-time, 10 = 10x faster, etc.
     void setTimeScale(double timeScale);
 
+    // Simulation time controls
+    std::chrono::system_clock::time_point simulationTime() const;
+    void setSimulationTime(std::chrono::system_clock::time_point t);
+
     // Assign a TLE to a satellite; if set, a moving marker is rendered using SGP4.
     bool setSatelliteTle(int id, const QString& line1, const QString& line2);
+
+    // Assign ephemeris samples (UVW/ECI position+velocity) to a satellite.
+    // This switches the satellite to propagator-driven mode.
+    bool setSatelliteEphemeris(int id, const std::vector<EphemerisSample>& samples);
 
 protected:
     void initializeGL() override;

@@ -3,6 +3,7 @@
 #include "gl/OrbitGlWidget.h"
 
 #include <QDockWidget>
+#include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QSlider>
@@ -14,11 +15,16 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QFormLayout>
 #include <QSpinBox>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <cmath>
+#include <vector>
 
 namespace {
 
@@ -56,6 +62,106 @@ static OrbitalElements defaultLeoElements()
     return el;
 }
 
+static bool parseEphemerisText(
+    const QString& text,
+    std::chrono::system_clock::time_point baseTime,
+    std::vector<EphemerisSample>& outSamples,
+    QString& outError)
+{
+    outSamples.clear();
+
+    const QStringList lines = text.split('\n');
+    int lineNum = 0;
+    for (const QString& rawLine : lines) {
+        ++lineNum;
+        QString line = rawLine.trimmed();
+        if (line.isEmpty() || line.startsWith('#')) {
+            continue;
+        }
+
+        line.replace(',', ' ');
+        QStringList parts = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+
+        // Support timestamps that are split as "YYYY-MM-DD HH:MM:SS(.sss)Z"
+        // by collapsing the first two tokens into ISO "YYYY-MM-DDTHH:MM:SS...".
+        int idx = 0;
+        QString timeToken;
+        if (parts.size() >= 8 && parts[0].contains('-') && parts[1].contains(':')) {
+            timeToken = parts[0] + 'T' + parts[1];
+            idx = 2;
+        } else if (parts.size() >= 7) {
+            timeToken = parts[0];
+            idx = 1;
+        } else {
+            outError = QStringLiteral("Line %1: expected at least 7 fields (t x y z vx vy vz)").arg(lineNum);
+            return false;
+        }
+
+        std::chrono::system_clock::time_point tp{};
+        {
+            const QString tNorm = timeToken;
+            QDateTime dt = QDateTime::fromString(tNorm, Qt::ISODateWithMs);
+            if (!dt.isValid()) {
+                dt = QDateTime::fromString(tNorm, Qt::ISODate);
+            }
+
+            if (dt.isValid()) {
+                dt = dt.toUTC();
+                tp = std::chrono::system_clock::time_point{std::chrono::milliseconds(dt.toMSecsSinceEpoch())};
+            } else {
+                bool ok = false;
+                const double secs = tNorm.toDouble(&ok);
+                if (!ok) {
+                    outError = QStringLiteral("Line %1: invalid time '%2' (use ISO-8601 or seconds)").arg(lineNum).arg(timeToken);
+                    return false;
+                }
+
+                // Heuristic: treat large values as Unix seconds; otherwise as seconds offset from baseTime.
+                if (secs >= 946684800.0) {
+                    const qint64 ms = static_cast<qint64>(std::llround(secs * 1000.0));
+                    tp = std::chrono::system_clock::time_point{std::chrono::milliseconds(ms)};
+                } else {
+                    tp = baseTime + std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::duration<double>(secs));
+                }
+            }
+        }
+
+        auto parseDouble = [&](int p, const char* label, double& outVal) -> bool {
+            if (p >= parts.size()) {
+                outError = QStringLiteral("Line %1: missing %2").arg(lineNum).arg(QString::fromUtf8(label));
+                return false;
+            }
+            bool ok = false;
+            outVal = parts[p].toDouble(&ok);
+            if (!ok) {
+                outError = QStringLiteral("Line %1: invalid %2 '%3'").arg(lineNum).arg(QString::fromUtf8(label)).arg(parts[p]);
+                return false;
+            }
+            return true;
+        };
+
+        EphemerisSample s;
+        s.t = tp;
+        if (!parseDouble(idx + 0, "x", s.positionKm[0]) ||
+            !parseDouble(idx + 1, "y", s.positionKm[1]) ||
+            !parseDouble(idx + 2, "z", s.positionKm[2]) ||
+            !parseDouble(idx + 3, "vx", s.velocityKmPerS[0]) ||
+            !parseDouble(idx + 4, "vy", s.velocityKmPerS[1]) ||
+            !parseDouble(idx + 5, "vz", s.velocityKmPerS[2])) {
+            return false;
+        }
+
+        outSamples.push_back(s);
+    }
+
+    if (outSamples.size() < 2) {
+        outError = QStringLiteral("Need at least 2 ephemeris samples.");
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -76,6 +182,14 @@ MainWindow::MainWindow(QWidget* parent)
     auto* bottomLayout = new QHBoxLayout(bottomBar);
     bottomLayout->setContentsMargins(8, 6, 8, 6);
     bottomLayout->setSpacing(8);
+
+    auto* clockLabel = new QLabel(bottomBar);
+    clockLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    bottomLayout->addWidget(clockLabel);
+
+    auto* nowBtn = new QPushButton("Now", bottomBar);
+    bottomLayout->addWidget(nowBtn);
+
     bottomLayout->addStretch(1);
 
     auto* pauseBtn = new QPushButton("Pause", bottomBar);
@@ -96,6 +210,23 @@ MainWindow::MainWindow(QWidget* parent)
     connect(x100Btn, &QPushButton::clicked, this, [this]() { glWidget_->setTimeScale(100.0); });
     connect(x1000Btn, &QPushButton::clicked, this, [this]() { glWidget_->setTimeScale(1000.0); });
 
+    connect(nowBtn, &QPushButton::clicked, this, [this]() {
+        glWidget_->setSimulationTime(std::chrono::system_clock::now());
+    });
+
+    auto* clockTimer = new QTimer(this);
+    clockTimer->setInterval(250);
+    connect(clockTimer, &QTimer::timeout, this, [this, clockLabel]() {
+        const auto tp = glWidget_->simulationTime();
+        const auto secTp = std::chrono::time_point_cast<std::chrono::seconds>(tp);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp - secTp).count();
+
+        const qint64 secs = static_cast<qint64>(std::chrono::system_clock::to_time_t(secTp));
+        const QDateTime dt = QDateTime::fromSecsSinceEpoch(secs, Qt::UTC).addMSecs(ms);
+        clockLabel->setText(QStringLiteral("Sim (UTC): %1").arg(dt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz"))));
+    });
+    clockTimer->start();
+
     centralLayout->addWidget(bottomBar, 0);
     setCentralWidget(central);
 
@@ -111,9 +242,11 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* addBtn = new QPushButton("Add Satellite", panel);
     auto* addTleBtn = new QPushButton("Add from TLE", panel);
+    auto* addEphemBtn = new QPushButton("Add from Ephemeris", panel);
     auto* topBtnLayout = new QHBoxLayout();
     topBtnLayout->addWidget(addBtn);
     topBtnLayout->addWidget(addTleBtn);
+    topBtnLayout->addWidget(addEphemBtn);
     panelLayout->addLayout(topBtnLayout);
 
     auto* scroll = new QScrollArea(panel);
@@ -385,6 +518,67 @@ MainWindow::MainWindow(QWidget* parent)
             const OrbitalElements uiEl = tleOk ? getElementsForSatelliteId(id, el) : el;
             addSatelliteEditor(id, name, uiEl, /*elementsEditable=*/!tleOk);
 
+            dialog->accept();
+        });
+
+        connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+
+        dialog->exec();
+        dialog->deleteLater();
+    });
+
+    connect(addEphemBtn,
+            &QPushButton::clicked,
+            this,
+            [this, addSatelliteEditor]() mutable {
+        auto* dialog = new QDialog(this);
+        dialog->setWindowTitle("Add Satellite from Ephemeris");
+        dialog->setMinimumWidth(650);
+
+        auto* layout = new QVBoxLayout(dialog);
+        auto* instrLabel = new QLabel(
+            "Paste ephemeris samples, one per line:\n"
+            "  t x y z vx vy vz\n\n"
+            "t: ISO-8601 (UTC recommended) or seconds (Unix seconds, or small offsets from current sim time)\n"
+            "Units: km and km/s (ECI axes)",
+            dialog);
+        instrLabel->setWordWrap(true);
+        layout->addWidget(instrLabel);
+
+        auto* textEdit = new QPlainTextEdit(dialog);
+        textEdit->setPlaceholderText(
+            "2026-02-14T12:00:00Z 7000 0 0 0 7.5 1.0\n"
+            "2026-02-14T12:01:00Z 6950 450 30 -0.2 7.48 1.05");
+        layout->addWidget(textEdit);
+
+        auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+        layout->addWidget(buttonBox);
+
+        connect(buttonBox,
+                &QDialogButtonBox::accepted,
+                dialog,
+                [this, dialog, textEdit, addSatelliteEditor]() {
+            std::vector<EphemerisSample> samples;
+            QString error;
+            const bool ok = parseEphemerisText(textEdit->toPlainText(), glWidget_->simulationTime(), samples, error);
+            if (!ok) {
+                QMessageBox::warning(this, "Error", error);
+                return;
+            }
+
+            const OrbitalElements el = defaultLeoElements();
+            const int segments = 512;
+            const QString name = QString("Satellite %1").arg(nextSatelliteNumber_++);
+            const int id = glWidget_->addSatellite(name, el, segments);
+
+            const bool ephOk = glWidget_->setSatelliteEphemeris(id, samples);
+            if (!ephOk) {
+                QMessageBox::warning(this, "Error", "Failed to apply ephemeris to satellite.");
+                glWidget_->removeSatellite(id);
+                return;
+            }
+
+            addSatelliteEditor(id, name, el, /*elementsEditable=*/false);
             dialog->accept();
         });
 

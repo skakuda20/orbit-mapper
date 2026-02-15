@@ -12,7 +12,7 @@ set(CMAKE_AUTORCC ON)
 
 option(ORBIT_MAPPER_ENABLE_SGP4 "Enable SGP4 propagation support" ON)
 
-set(ORBIT_MAPPER_QT_VERSION "6" CACHE STRING "Qt major version to use (6 or 5)")
+set(ORBIT_MAPPER_QT_VERSION "5" CACHE STRING "Qt major version to use (6 or 5)")
 set_property(CACHE ORBIT_MAPPER_QT_VERSION PROPERTY STRINGS 6 5)
 
 if (ORBIT_MAPPER_QT_VERSION STREQUAL "6")
@@ -33,6 +33,8 @@ add_executable(orbit_mapper
   src/orbit/OrbitalElements.h
   src/orbit/Kepler.cpp
   src/orbit/Kepler.h
+  src/orbit/EphemerisPropagator.cpp
+  src/orbit/EphemerisPropagator.h
   src/orbit/OrbitSampler.cpp
   src/orbit/OrbitSampler.h
   src/orbit/Propagator.h

@@ -4,6 +4,7 @@
 #include "orbit/Kepler.h"
 #include "orbit/OrbitSampler.h"
 #include "orbit/Propagator.h"
+#include "orbit/EphemerisPropagator.h"
 #include "orbit/Sgp4Propagator.h"
 
 #include <QCoreApplication>
@@ -177,6 +178,17 @@ OrbitGlWidget::OrbitGlWidget(QWidget* parent)
     distance_ = 4.0f;
 
     // Satellites are managed from the Qt side panel (MainWindow).
+}
+
+std::chrono::system_clock::time_point OrbitGlWidget::simulationTime() const
+{
+    return simTime_;
+}
+
+void OrbitGlWidget::setSimulationTime(std::chrono::system_clock::time_point t)
+{
+    simTime_ = t;
+    update();
 }
 
 int OrbitGlWidget::addSatellite(const QString& name, const OrbitalElements& elements, int segments)
@@ -375,6 +387,58 @@ bool OrbitGlWidget::setSatelliteTle(int id, const QString& line1, const QString&
     update();
     return true;
 #endif
+}
+
+bool OrbitGlWidget::setSatelliteEphemeris(int id, const std::vector<EphemerisSample>& samples)
+{
+    auto* sat = findSatellite(id);
+    if (!sat) {
+        return false;
+    }
+
+    std::vector<EphemerisSample> sorted = samples;
+    sorted.erase(
+        std::remove_if(sorted.begin(), sorted.end(), [](const EphemerisSample& s) {
+            return s.t == std::chrono::system_clock::time_point{};
+        }),
+        sorted.end());
+    std::sort(sorted.begin(), sorted.end(), [](const EphemerisSample& a, const EphemerisSample& b) {
+        return a.t < b.t;
+    });
+
+    if (sorted.size() < 2) {
+        return false;
+    }
+
+    sat->propagator = std::make_unique<EphemerisPropagator>(sorted);
+
+    // Build a polyline directly from samples (converted to render units).
+    std::vector<float> out;
+    out.reserve(sorted.size() * 3);
+    for (const auto& s : sorted) {
+        const float x = static_cast<float>(s.positionKm[0] / kEarthRadiusKm);
+        const float y = static_cast<float>(s.positionKm[2] / kEarthRadiusKm);
+        const float z = static_cast<float>(-s.positionKm[1] / kEarthRadiusKm);
+        out.push_back(x);
+        out.push_back(y);
+        out.push_back(z);
+    }
+    sat->vertices = std::move(out);
+
+    if (glInitialized_) {
+        makeCurrent();
+        if (sat->vao == 0) {
+            glGenVertexArrays(1, &sat->vao);
+        }
+        if (sat->vbo == 0) {
+            glGenBuffers(1, &sat->vbo);
+        }
+        rebuildSatelliteVbo(*sat);
+        doneCurrent();
+    }
+
+    update();
+    return true;
 }
 
 void OrbitGlWidget::initializeGL()
@@ -705,6 +769,16 @@ void OrbitGlWidget::rebuildSatelliteGeometry(Satellite& sat)
     // If a propagator exists (e.g. SGP4), sample it over one estimated orbital period.
     if (sat.propagator) {
         double periodSec = 0.0;
+        std::chrono::system_clock::time_point t0 = simTime_;
+
+        if (auto* eph = dynamic_cast<EphemerisPropagator*>(sat.propagator.get())) {
+            const auto& samples = eph->samples();
+            if (samples.size() >= 2) {
+                t0 = samples.front().t;
+                periodSec = std::chrono::duration_cast<std::chrono::duration<double>>(samples.back().t - samples.front().t).count();
+            }
+        }
+
         if (auto* sgp4 = dynamic_cast<Sgp4Propagator*>(sat.propagator.get())) {
             (void)sgp4->tryGetOrbitalPeriodSeconds(periodSec);
         }
@@ -726,7 +800,6 @@ void OrbitGlWidget::rebuildSatelliteGeometry(Satellite& sat)
         std::vector<float> out;
         out.reserve(static_cast<size_t>(segments + 1) * 3);
 
-        const auto t0 = simTime_;
         for (int s = 0; s <= segments; ++s) {
             const double u = static_cast<double>(s) / static_cast<double>(segments);
             const auto dt = std::chrono::duration_cast<std::chrono::system_clock::duration>(

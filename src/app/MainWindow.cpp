@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QLabel>
 #include <QMessageBox>
@@ -189,6 +190,46 @@ MainWindow::MainWindow(QWidget* parent)
 
     auto* nowBtn = new QPushButton("Now", bottomBar);
     bottomLayout->addWidget(nowBtn);
+
+    // UTC time input field
+    auto* timeInput = new QLineEdit(bottomBar);
+    timeInput->setPlaceholderText("Enter UTC time (YYYY-MM-DD HH:MM:SS)");
+    timeInput->setMaximumWidth(250);
+    bottomLayout->addWidget(timeInput);
+
+    connect(timeInput, &QLineEdit::returnPressed, this, [this, timeInput]() {
+        const QString input = timeInput->text().trimmed();
+        if (input.isEmpty()) {
+            return;
+        }
+
+        // Try parsing as ISO-8601 with various formats
+        QDateTime dt = QDateTime::fromString(input, Qt::ISODateWithMs);
+        if (!dt.isValid()) {
+            dt = QDateTime::fromString(input, Qt::ISODate);
+        }
+        if (!dt.isValid()) {
+            // Try without 'T' separator (space instead)
+            dt = QDateTime::fromString(input, "yyyy-MM-dd HH:mm:ss");
+        }
+        if (!dt.isValid()) {
+            dt = QDateTime::fromString(input, "yyyy-MM-dd HH:mm:ss.zzz");
+        }
+
+        if (dt.isValid()) {
+            // Explicitly set as UTC time (not local time)
+            dt.setTimeSpec(Qt::UTC);
+            const auto tp = std::chrono::system_clock::time_point{std::chrono::milliseconds(dt.toMSecsSinceEpoch())};
+            glWidget_->setSimulationTime(tp);
+            timeInput->clear();
+        } else {
+            // Show error by changing background color temporarily
+            timeInput->setStyleSheet("QLineEdit { background-color: #ffcccc; }");
+            QTimer::singleShot(1500, timeInput, [timeInput]() {
+                timeInput->setStyleSheet("");
+            });
+        }
+    });
 
     bottomLayout->addStretch(1);
 
